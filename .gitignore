@@ -1,0 +1,11 @@
+.Xil/
+vivado*.jou
+vivado*.log
+vivado_*.backup.*
+vivado_led_chaser/
+vivado_nexys4ddr/
+*.vvp
+*.pb
+*.wdb
+.DS_Store
+._*

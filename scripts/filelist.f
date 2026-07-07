@@ -1,0 +1,14 @@
+src/pc.v
+src/instr_mem.v
+src/data_mem.v
+src/regfile.v
+src/imm_gen.v
+src/alu.v
+src/alu_control.v
+src/control_unit.v
+src/branch_unit.v
+src/cpu_top.v
+src/clk_div.v
+src/seg7_hex.v
+src/fpga_top.v
+sim/tb_cpu_top.v
