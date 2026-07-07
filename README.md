@@ -189,3 +189,5 @@ build/bitstreams/led_chaser_top.bit
 如果 `SW=01` 显示 `1`，说明测试程序进入成功路径；如果 `SW=10` 显示 `0x000c`，说明访存结果正确。
 
 下载链路不稳定时，先用流水灯例程确认 Vivado、Digilent 驱动、JTAG 和板卡供电是否正常。
+
+板卡识别问题的排查记录见 [docs/调试日志.md](docs/调试日志.md)。
