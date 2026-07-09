@@ -1,0 +1,468 @@
+# CPU 子系统设计方案
+
+## 1. 设计目标
+
+CPU 子系统负责实现阶段二任务中的 D 方向：RISC-V32I 子集 CPU、流水线机制、CPI/频率/吞吐量评估，以及与系统结构、内存子系统、板载 I/O 的干净接口。
+
+本方案遵循 `docs/设计方案/architect.md` 中已经确定的系统架构：
+
+1. 系统采用哈佛结构，CPU 分别通过指令总线和数据总线访问指令存储器、数据存储器和内存映射 I/O。
+2. 指令总线、数据总线统一使用 `req/ack` 握手，不假设存储器或外设一定单周期响应。
+3. CPU 不直接连接 LED、拨码开关、数码管等板载外设，全部 I/O 访问通过数据总线地址映射完成。
+4. 任意 CPU 实现，包括单周期、多周期、流水线，都必须遵循统一 CPU 顶层端口。
+
+## 2. 设计边界
+
+### 2.1 CPU 负责内容
+
+| 模块         | 责任                                                    |
+| ------------ | ------------------------------------------------------- |
+| 取指单元     | 维护 PC，发起`imem` 取指请求，处理取指等待            |
+| 译码单元     | 解析指令字段，生成控制信号，读取寄存器                  |
+| 执行单元     | ALU 运算、分支比较、跳转目标计算                        |
+| 访存单元     | 对`lw/sw` 等指令发起 `dmem` 请求，等待 `dmem_ack` |
+| 写回单元     | 将 ALU、访存、`PC+4`、立即数等结果写回寄存器          |
+| 冒险处理     | 数据前递、load-use 暂停、分支/跳转冲刷                  |
+| 性能统计     | 统计 cycle、instret、stall、flush 等指标                |
+| 异常中断预留 | 预留`meip/mtip/msip` 输入和 `dmem_fault` 处理策略   |
+
+### 2.2 CPU 不负责内容
+
+| 内容                            | 归属             |
+| ------------------------------- | ---------------- |
+| 指令存储器具体容量和初始化方式  | B：内存子系统    |
+| 数据存储器、Cache、访存命中统计 | B：内存子系统    |
+| LED、SW、数码管、按键等外设实现 | C：板载 I/O 接口 |
+| 数据总线地址译码和 SoC 集成     | A：系统结构设计  |
+| FPGA 顶层管脚约束               | A/C 联合维护     |
+
+CPU 只输出标准 `imem_*`、`dmem_*` 总线信号，不依赖外设内部实现。
+
+## 3. CPU 顶层接口
+
+### 3.1 推荐顶层模块
+
+阶段二新增流水线 CPU 顶层命名为：
+
+```verilog
+module pipeline_cpu_top (
+    input  wire        clk,
+    input  wire        rst_n,
+
+    output wire        imem_req,
+    output wire [31:0] imem_addr,
+    input  wire        imem_ack,
+    input  wire [31:0] imem_data,
+
+    output wire        dmem_req,
+    output wire [31:0] dmem_addr,
+    output wire        dmem_we,
+    output wire [31:0] dmem_wdata,
+    output wire [1:0]  dmem_width,
+    input  wire        dmem_ack,
+    input  wire [31:0] dmem_rdata,
+    input  wire        dmem_fault,
+
+    input  wire        meip,
+    input  wire        mtip,
+    input  wire        msip,
+
+    output wire [31:0] debug_pc,
+    output wire [31:0] debug_cycle,
+    output wire [31:0] debug_instret,
+    output wire [31:0] debug_stall,
+    output wire [31:0] debug_flush
+);
+```
+
+该端口集在 `architect.md` 的基础上增加了调试/性能统计输出。集成到 `soc_top` 时，调试输出可接入性能计数器地址窗口，也可仅用于仿真。
+
+### 3.2 端口说明
+
+| 端口              | 方向 | 位宽 | 说明                                |
+| ----------------- | ---- | ---- | ----------------------------------- |
+| `clk`           | in   | 1    | 全局时钟，上升沿采样                |
+| `rst_n`         | in   | 1    | 低有效复位                          |
+| `imem_req`      | out  | 1    | 取指请求                            |
+| `imem_addr`     | out  | 32   | 取指字节地址，要求 4 字节对齐       |
+| `imem_ack`      | in   | 1    | 指令存储器响应                      |
+| `imem_data`     | in   | 32   | 取回的 32 位指令                    |
+| `dmem_req`      | out  | 1    | 数据访存请求                        |
+| `dmem_addr`     | out  | 32   | 数据访存字节地址                    |
+| `dmem_we`       | out  | 1    | 写使能，1 表示写，0 表示读          |
+| `dmem_wdata`    | out  | 32   | 写入数据                            |
+| `dmem_width`    | out  | 2    | `00` 字，`01` 半字，`10` 字节 |
+| `dmem_ack`      | in   | 1    | 数据总线响应                        |
+| `dmem_rdata`    | in   | 32   | 数据总线读回原始 32 位数据          |
+| `dmem_fault`    | in   | 1    | 地址错误或设备访问错误              |
+| `meip`          | in   | 1    | 机器态外部中断待决                  |
+| `mtip`          | in   | 1    | 机器态定时器中断待决                |
+| `msip`          | in   | 1    | 机器态软件中断待决                  |
+| `debug_pc`      | out  | 32   | 当前提交或取指 PC，用于调试         |
+| `debug_cycle`   | out  | 32   | 周期计数                            |
+| `debug_instret` | out  | 32   | 已提交指令数                        |
+| `debug_stall`   | out  | 32   | 流水线暂停次数                      |
+| `debug_flush`   | out  | 32   | 流水线冲刷次数                      |
+
+### 3.3 复位行为
+
+复位期间 CPU 输出保持以下默认值：
+
+| 信号           | 复位值          |
+| -------------- | --------------- |
+| `imem_req`   | `0`           |
+| `imem_addr`  | `0x0000_0000` |
+| `dmem_req`   | `0`           |
+| `dmem_addr`  | `0x0000_0000` |
+| `dmem_we`    | `0`           |
+| `dmem_wdata` | `0x0000_0000` |
+| `dmem_width` | `2'b00`       |
+| `debug_*`    | `0`           |
+
+复位释放后，PC 从 `0x0000_0000` 开始取指。
+
+## 4. 指令集范围
+
+### 4.1 基础必须支持
+
+阶段二 CPU 至少应保持当前基础 CPU 已支持的指令：
+
+| 类型         | 指令                                       |
+| ------------ | ------------------------------------------ |
+| R 型算术逻辑 | `add`、`sub`、`and`、`or`、`xor` |
+| I 型算术逻辑 | `addi`、`andi`、`ori`、`xori`      |
+| Load         | `lw`                                     |
+| Store        | `sw`                                     |
+| Branch       | `beq`、`bne`                           |
+| Jump         | `jal`                                    |
+
+### 4.2 阶段二建议扩展
+
+为满足进阶层次“RISC-V32I 子集实现”的要求，建议优先补齐以下常用 RV32I 指令：
+
+| 类型          | 指令                                                    | 优先级 |
+| ------------- | ------------------------------------------------------- | ------ |
+| 移位          | `sll`、`srl`、`sra`、`slli`、`srli`、`srai` | 高     |
+| 比较          | `slt`、`sltu`、`slti`、`sltiu`                  | 高     |
+| 上立即数      | `lui`、`auipc`                                      | 高     |
+| 跳转          | `jalr`                                                | 高     |
+| 分支          | `blt`、`bge`、`bltu`、`bgeu`                    | 高     |
+| 字节/半字访存 | `lb`、`lh`、`lbu`、`lhu`、`sb`、`sh`        | 中     |
+
+### 4.3 暂不纳入范围
+
+以下内容不作为阶段二 CPU 最小交付要求：
+
+| 内容          | 说明                                      |
+| ------------- | ----------------------------------------- |
+| `M` 扩展    | 乘法、除法可作为拓展                      |
+| `F/D` 扩展  | 浮点运算不纳入当前 CPU 主线               |
+| 完整特权架构  | CSR、中断、异常先预留接口，后续按进度实现 |
+| 压缩指令`C` | 当前取指按 32 位固定长度处理              |
+
+## 5. 流水线结构
+
+### 5.1 五级流水
+
+流水线 CPU 采用经典五级结构：
+
+```text
+IF  ->  ID  ->  EX  ->  MEM  ->  WB
+取指    译码    执行     访存     写回
+```
+
+各级职责如下：
+
+| 阶段 | 主要功能                                           |
+| ---- | -------------------------------------------------- |
+| IF   | PC 寄存器、取指请求、下一 PC 选择                  |
+| ID   | 指令字段解析、控制信号生成、寄存器读取、立即数生成 |
+| EX   | ALU 运算、分支比较、跳转目标计算、前递选择         |
+| MEM  | 数据总线访问、load/store 等待、访存异常接收        |
+| WB   | 写回数据选择、寄存器写回、指令提交统计             |
+
+流水线寄存器：
+
+| 寄存器         | 连接阶段 | 内容                                            |
+| -------------- | -------- | ----------------------------------------------- |
+| `if_id_reg`  | IF/ID    | `pc`、`pc_plus4`、`instr`、valid          |
+| `id_ex_reg`  | ID/EX    | 操作数、立即数、rd/rs、控制信号、valid          |
+| `ex_mem_reg` | EX/MEM   | ALU 结果、store 数据、分支结果、访存控制、valid |
+| `mem_wb_reg` | MEM/WB   | ALU 结果、load 数据、写回控制、valid            |
+
+### 5.2 推荐源码拆分
+
+CPU 子系统建议独立放在：
+
+```text
+src/cpu/pipeline/
+  pipeline_cpu_top.v
+  pipeline_if_stage.v
+  pipeline_id_stage.v
+  pipeline_ex_stage.v
+  pipeline_mem_stage.v
+  pipeline_wb_stage.v
+  if_id_reg.v
+  id_ex_reg.v
+  ex_mem_reg.v
+  mem_wb_reg.v
+  pipeline_control_unit.v
+  hazard_unit.v
+  forwarding_unit.v
+  perf_counter.v
+```
+
+当前 `src/*.v` 中的基础单周期 CPU 保留为 baseline。流水线 CPU 不直接覆盖基础版，避免破坏已有仿真和上板结果。
+
+## 6. 总线握手策略
+
+### 6.1 指令总线
+
+IF 阶段发起取指：
+
+```text
+imem_req=1
+imem_addr=pc
+```
+
+当 `imem_ack=0` 时，IF 阶段必须保持 `imem_req` 和 `imem_addr` 稳定，同时暂停 PC 更新和 IF/ID 流水寄存器写入。
+
+当 `imem_ack=1` 时，`imem_data` 被采样进入 IF/ID 寄存器。
+
+### 6.2 数据总线
+
+MEM 阶段遇到 load/store 时发起数据访问：
+
+```text
+dmem_req=1
+dmem_addr=ex_mem_alu_result
+dmem_we=store_en
+dmem_wdata=store_data
+dmem_width=访问宽度
+```
+
+当 `dmem_ack=0` 时，MEM 阶段及其之前的流水线阶段整体暂停，保证该访存指令不被后续指令覆盖。
+
+当 `dmem_ack=1` 时：
+
+1. load 指令采样 `dmem_rdata`，送入 MEM/WB。
+2. store 指令认为写入完成，可以提交。
+3. 若 `dmem_fault=1`，当前阶段先记录 fault；最小实现可将其作为停止/调试标志，完整实现再进入异常处理。
+
+### 6.3 访存宽度
+
+`dmem_width` 定义与架构文档保持一致：
+
+```text
+2'b00: word
+2'b01: halfword
+2'b10: byte
+2'b11: reserved
+```
+
+数据总线返回原始 32 位数据，CPU 在 WB 阶段或 MEM 阶段根据 load 指令类型完成符号扩展或零扩展。
+
+## 7. 冒险处理
+
+### 7.1 数据前递
+
+为减少无效暂停，EX 阶段应支持来自后续流水级的结果前递：
+
+| 来源                  | 目标       | 用途                   |
+| --------------------- | ---------- | ---------------------- |
+| EX/MEM.ALU result     | EX.rs1/rs2 | 解决 ALU 指令紧邻相关  |
+| MEM/WB.writeback data | EX.rs1/rs2 | 解决间隔一条以上的相关 |
+
+前递优先级：
+
+```text
+EX/MEM 优先于 MEM/WB
+```
+
+### 7.2 load-use 暂停
+
+当 ID 阶段指令读取的 `rs1/rs2` 依赖 EX 阶段 load 指令的 `rd` 时，load 数据尚未返回，必须插入 1 个 bubble：
+
+```text
+id_ex_mem_read &&
+id_ex_rd != 0 &&
+(id_ex_rd == if_id_rs1 || id_ex_rd == if_id_rs2)
+```
+
+处理动作：
+
+1. PC 保持不变。
+2. IF/ID 保持不变。
+3. ID/EX 写入空操作控制信号。
+4. `debug_stall` 计数加 1。
+
+### 7.3 控制冒险
+
+分支和跳转建议在 EX 阶段确定目标。若跳转成立：
+
+1. PC 更新为分支/跳转目标。
+2. IF/ID 和 ID/EX 中的错误路径指令置 invalid 或注入 NOP。
+3. `debug_flush` 计数加 1 或按冲刷级数累加。
+
+`jalr` 目标为：
+
+```text
+(rs1 + imm) & 32'hffff_fffe
+```
+
+### 7.4 结构冒险
+
+系统采用哈佛结构，指令总线和数据总线分离，正常情况下不存在取指和访存争用同一总线的结构冒险。若 B 组后续在底层将指令和数据统一到同一物理 RAM 或 DDR 控制器，则由内存子系统通过 `ack` 等待体现，CPU 只需按握手暂停。
+
+## 8. 控制信号设计
+
+ID 阶段生成的控制信号随流水线向后传递：
+
+| 控制信号          | 作用阶段 | 说明                     |
+| ----------------- | -------- | ------------------------ |
+| `alu_op`        | EX       | 选择 ALU 运算            |
+| `alu_src1_sel`  | EX       | 选择`rs1` 或 PC        |
+| `alu_src2_sel`  | EX       | 选择`rs2` 或立即数     |
+| `branch_type`   | EX       | 分支类型                 |
+| `jump_type`     | EX       | `jal`/`jalr`         |
+| `mem_read`      | MEM      | 发起 load                |
+| `mem_write`     | MEM      | 发起 store               |
+| `mem_width`     | MEM      | byte/halfword/word       |
+| `load_unsigned` | MEM/WB   | 控制 load 零扩展         |
+| `reg_write`     | WB       | 是否写回 rd              |
+| `wb_sel`        | WB       | ALU、MEM、PC+4、IMM 选择 |
+
+推荐 `wb_sel` 编码：
+
+| 编码      | 来源                      |
+| --------- | ------------------------- |
+| `2'b00` | ALU result                |
+| `2'b01` | memory load data          |
+| `2'b10` | `PC+4`                  |
+| `2'b11` | immediate /`lui` result |
+
+## 9. 性能统计
+
+CPU 内部设置性能计数器，用于 D 方向验收的 CPI/stall/flush 评估。
+
+| 计数器      | 递增条件                                        |
+| ----------- | ----------------------------------------------- |
+| `cycle`   | 复位释放后每个周期加 1                          |
+| `instret` | WB 阶段有 valid 指令成功提交                    |
+| `stall`   | 因 load-use、取指等待、访存等待等导致流水线暂停 |
+| `flush`   | 因分支、跳转、异常等清空错误路径指令            |
+
+CPI 计算：
+
+```text
+CPI = cycle / instret
+```
+
+吞吐量估算：
+
+```text
+IPS = Fmax / CPI
+```
+
+若 `instret=0`，仿真或显示逻辑应避免除零，只输出原始计数。
+
+## 10. 异常与中断策略
+
+阶段二最小实现可以先预留中断端口，不要求完整 CSR 和特权级切换。但接口和流水线结构需要为后续扩展留出位置。
+
+### 10.1 最小实现
+
+| 信号           | 最小处理                             |
+| -------------- | ------------------------------------ |
+| `meip`       | 输入保留，不改变执行流               |
+| `mtip`       | 输入保留，不改变执行流               |
+| `msip`       | 输入保留，不改变执行流               |
+| `dmem_fault` | 记录 fault，可在仿真中报错或停止提交 |
+
+### 10.2 后续完整实现
+
+完整异常/中断支持需要增加：
+
+1. CSR 文件：`mstatus`、`mie`、`mip`、`mtvec`、`mepc`、`mcause`、`mtval`。
+2. trap 控制：保存异常 PC，跳转到 `mtvec`。
+3. `mret` 返回逻辑。
+4. 流水线精确异常：只提交异常前的指令，冲刷异常后的指令。
+
+## 11. 与现有基础 CPU 的关系
+
+当前基础 CPU 是单周期实现，模块位于 `src/*.v`。它已经可以完成基础 smoke test，适合作为阶段二对照版本。
+
+流水线版本不直接替换现有 `cpu_top.v`，而是新增 `pipeline_cpu_top.v`。后续由 A 组在 `soc_top` 中选择接入哪个 CPU：
+
+```text
+基础对照：cpu_top
+阶段二：pipeline_cpu_top
+```
+
+为了便于对比，建议保留两套仿真：
+
+| 仿真                      | 目标                                |
+| ------------------------- | ----------------------------------- |
+| `tb_cpu_top.v`          | 验证基础单周期 CPU 未被破坏         |
+| `tb_pipeline_cpu_top.v` | 验证流水线 CPU 功能、冒险和性能统计 |
+
+## 12. 验收测试计划
+
+### 12.1 功能测试
+
+| 测试                    | 覆盖内容                                    |
+| ----------------------- | ------------------------------------------- |
+| `pipeline_smoke`      | `addi/add/sw/lw/beq/jal` 主链路           |
+| `pipeline_logic`      | `and/or/xor/andi/ori/xori`                |
+| `pipeline_shift_cmp`  | 移位和比较指令                              |
+| `pipeline_branch`     | `beq/bne/blt/bge/bltu/bgeu/jal/jalr`      |
+| `pipeline_load_store` | `lw/sw`，后续扩展 `lb/lh/lbu/lhu/sb/sh` |
+| `pipeline_hazard`     | 前递、load-use stall、分支 flush            |
+
+### 12.2 集成测试
+
+| 测试                    | 通过标准                                      |
+| ----------------------- | --------------------------------------------- |
+| CPU + imem              | CPU 能通过`imem` 握手取指并运行程序         |
+| CPU + dmem              | CPU 能通过`dmem` 握手完成 load/store        |
+| CPU + memory-mapped I/O | CPU 通过`lw/sw` 访问 LED/SW/数码管地址      |
+| CPU + SoC               | `soc_top` 集成后仿真结果与单独 CPU 仿真一致 |
+
+### 12.3 性能对比
+
+阶段二报告中建议给出：
+
+| 指标        | 单周期 CPU | 流水线 CPU |
+| ----------- | ---------- | ---------- |
+| Vivado Fmax | 待测       | 待测       |
+| cycle       | 待测       | 待测       |
+| instret     | 待测       | 待测       |
+| CPI         | 待测       | 待测       |
+| stall       | 不适用或 0 | 待测       |
+| flush       | 不适用或 0 | 待测       |
+| LUT/FF/BRAM | 待测       | 待测       |
+
+## 13. D 方向最小交付清单
+
+| 交付物          | 路径建议                                |
+| --------------- | --------------------------------------- |
+| CPU 设计方案    | `docs/设计方案/CPU.md`                |
+| 流水线 CPU 顶层 | `src/cpu/pipeline/pipeline_cpu_top.v` |
+| 流水线阶段模块  | `src/cpu/pipeline/*_stage.v`          |
+| 冒险处理模块    | `src/cpu/pipeline/hazard_unit.v`      |
+| 前递模块        | `src/cpu/pipeline/forwarding_unit.v`  |
+| 性能计数器      | `src/cpu/pipeline/perf_counter.v`     |
+| 流水线仿真      | `sim/tb_pipeline_cpu_top.v`           |
+| 流水线文件列表  | `scripts/filelist_pipeline.f`         |
+
+## 14. 实施顺序
+
+建议按以下顺序推进：
+
+1. 固定 `pipeline_cpu_top` 端口，先提供空壳模块，方便 A/B/C 并行集成。
+2. 复用现有 `regfile`、`imm_gen`、`alu`、`branch_unit` 思路，完成无冒险版本流水线。
+3. 支持基础 smoke test 指令，跑通 `addi/add/sw/lw/beq/jal`。
+4. 增加前递和 load-use stall，跑通 hazard 测试。
+5. 扩展常用 RV32I 指令。
+6. 接入性能计数器，输出 CPI/stall/flush 数据。
+7. 与 `soc_top`、`imem/dmem`、I/O 地址映射联调。
