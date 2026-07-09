@@ -156,48 +156,6 @@ module ps2_controller (
     end
 
     // ==================================================================
-    // Scan code -> key value lookup (combinational)
-    // ==================================================================
-    reg [5:0] key_info;
-
-    always @(*) begin
-        case (rdata_byte)
-            8'h45: key_info = {1'b1, 1'b0, 4'd0};  // 0
-            8'h16: key_info = {1'b1, 1'b0, 4'd1};  // 1
-            8'h1E: key_info = {1'b1, 1'b0, 4'd2};  // 2
-            8'h26: key_info = {1'b1, 1'b0, 4'd3};  // 3
-            8'h25: key_info = {1'b1, 1'b0, 4'd4};  // 4
-            8'h2E: key_info = {1'b1, 1'b0, 4'd5};  // 5
-            8'h36: key_info = {1'b1, 1'b0, 4'd6};  // 6
-            8'h3D: key_info = {1'b1, 1'b0, 4'd7};  // 7
-            8'h3E: key_info = {1'b1, 1'b0, 4'd8};  // 8
-            8'h46: key_info = {1'b1, 1'b0, 4'd9};  // 9
-            8'h70: key_info = {1'b1, 1'b0, 4'd0};  // keypad 0
-            8'h69: key_info = {1'b1, 1'b0, 4'd1};  // keypad 1
-            8'h72: key_info = {1'b1, 1'b0, 4'd2};  // keypad 2
-            8'h7A: key_info = {1'b1, 1'b0, 4'd3};  // keypad 3
-            8'h6B: key_info = {1'b1, 1'b0, 4'd4};  // keypad 4
-            8'h73: key_info = {1'b1, 1'b0, 4'd5};  // keypad 5
-            8'h74: key_info = {1'b1, 1'b0, 4'd6};  // keypad 6
-            8'h6C: key_info = {1'b1, 1'b0, 4'd7};  // keypad 7
-            8'h75: key_info = {1'b1, 1'b0, 4'd8};  // keypad 8
-            8'h7D: key_info = {1'b1, 1'b0, 4'd9};  // keypad 9
-            8'h1C: key_info = {1'b1, 1'b0, 4'd10}; // A
-            8'h32: key_info = {1'b1, 1'b0, 4'd11}; // B
-            8'h21: key_info = {1'b1, 1'b0, 4'd12}; // C
-            8'h23: key_info = {1'b1, 1'b0, 4'd13}; // D
-            8'h24: key_info = {1'b1, 1'b0, 4'd14}; // E
-            8'h2B: key_info = {1'b1, 1'b0, 4'd15}; // F
-            8'h5A: key_info = {1'b0, 1'b1, 4'd0};  // Enter
-            default: key_info = 6'b0;
-        endcase
-    end
-
-    wire key_digit = key_info[5];
-    wire key_enter = key_info[4];
-    wire [3:0] key_value = key_info[3:0];
-
-    // ==================================================================
     // Register interface (clk domain)
     // ==================================================================
     reg        ctrl_enable;
@@ -260,10 +218,8 @@ module ps2_controller (
                     dmem_fault = 1'b1;
             end else begin
                 // PS2_RDATA (offset 0x4)
-                // [31:15] reserved, [14]=enter, [13]=digit,
-                // [12:9]=key_value, [8]=valid, [7:0]=scan_code
-                dmem_rdata = {17'd0, key_enter, key_digit,
-                              key_value, rdata_valid, rdata_byte};
+                // [31:9] reserved, [8]=valid, [7:0]=raw scan_code
+                dmem_rdata = {23'd0, rdata_valid, rdata_byte};
                 if (dmem_we)
                     dmem_fault = 1'b1;
             end
