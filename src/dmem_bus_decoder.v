@@ -13,6 +13,11 @@ module dmem_bus_decoder (
     input wire [31:0] mem_rdata,
     input wire mem_fault,
 
+    output wire ps2_cs,
+    input wire ps2_ack,
+    input wire [31:0] ps2_rdata,
+    input wire ps2_fault,
+
     output wire sw_cs,
     input wire sw_ack,
     input wire [31:0] sw_rdata,
@@ -39,14 +44,16 @@ module dmem_bus_decoder (
     input wire intc_fault
 );
     wire hit_mem = dmem_addr < 32'h08000000;
+    wire hit_ps2 = dmem_addr >= 32'h80000000 && dmem_addr <= 32'h80000007;
     wire hit_sw = dmem_addr >= 32'h80000008 && dmem_addr <= 32'h8000000b;
     wire hit_led = dmem_addr >= 32'h8000000c && dmem_addr <= 32'h8000000f;
     wire hit_seg = dmem_addr >= 32'h80000010 && dmem_addr <= 32'h8000002f;
     wire hit_btn = dmem_addr >= 32'h80000030 && dmem_addr <= 32'h80000033;
     wire hit_intc = dmem_addr >= 32'h81000000 && dmem_addr <= 32'h81200007;
-    wire miss = !(hit_mem || hit_sw || hit_led || hit_seg || hit_btn || hit_intc);
+    wire miss = !(hit_mem || hit_ps2 || hit_sw || hit_led || hit_seg || hit_btn || hit_intc);
 
     assign mem_cs = dmem_req && hit_mem;
+    assign ps2_cs = dmem_req && hit_ps2;
     assign sw_cs = dmem_req && hit_sw;
     assign led_cs = dmem_req && hit_led;
     assign seg_cs = dmem_req && hit_seg;
@@ -54,6 +61,7 @@ module dmem_bus_decoder (
     assign intc_cs = dmem_req && hit_intc;
 
     assign dmem_ack = (mem_cs && mem_ack) ||
+                      (ps2_cs && ps2_ack) ||
                       (sw_cs && sw_ack) ||
                       (led_cs && led_ack) ||
                       (seg_cs && seg_ack) ||
@@ -62,6 +70,7 @@ module dmem_bus_decoder (
                       (dmem_req && miss);
 
     assign dmem_rdata = mem_cs ? mem_rdata :
+                        ps2_cs ? ps2_rdata :
                         sw_cs ? sw_rdata :
                         led_cs ? led_rdata :
                         seg_cs ? seg_rdata :
@@ -70,6 +79,7 @@ module dmem_bus_decoder (
                         32'b0;
 
     assign dmem_fault = (mem_cs && mem_fault) ||
+                        (ps2_cs && ps2_fault) ||
                         (sw_cs && sw_fault) ||
                         (led_cs && led_fault) ||
                         (seg_cs && seg_fault) ||
