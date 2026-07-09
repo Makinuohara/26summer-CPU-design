@@ -48,7 +48,7 @@ module cpu_top (
     instr_mem u_instr_mem (
         .addr(pc_current),
         .instr(instr)
-    );
+    );//取指令
 
     control_unit u_control_unit (
         .opcode(opcode),
@@ -60,7 +60,7 @@ module cpu_top (
         .branch(branch),
         .jump(jump),
         .alu_op(alu_op)
-    );
+    );//译码
 
     regfile u_regfile (
         .clk(clk),
@@ -73,19 +73,19 @@ module cpu_top (
         .read_data1(rs1_data),
         .read_data2(rs2_data),
         .debug_x5(debug_x5)
-    );
+    );//读取rs1/rs2寄存器
 
     imm_gen u_imm_gen (
         .instr(instr),
         .imm(imm)
-    );
+    );//生成立即数
 
     alu_control u_alu_control (
         .alu_op(alu_op),
         .funct3(funct3),
         .funct7(funct7),
         .alu_ctrl(alu_ctrl)
-    );
+    );//选择ALU操作
 
     assign alu_b = alu_src ? imm : rs2_data;
 
@@ -95,7 +95,7 @@ module cpu_top (
         .alu_ctrl(alu_ctrl),
         .result(alu_result),
         .zero(zero)
-    );
+    );//执行ALU操作
 
     data_mem u_data_mem (
         .clk(clk),
@@ -105,7 +105,7 @@ module cpu_top (
         .write_data(rs2_data),
         .read_data(mem_read_data),
         .debug_mem0(debug_mem0)
-    );
+    );//访存
 
     branch_unit u_branch_unit (
         .funct3(funct3),
@@ -120,4 +120,5 @@ module cpu_top (
     assign pc_next = jump ? pc_jump : ((branch && take_branch) ? pc_branch : pc_plus4);
     assign writeback_data = jump ? pc_plus4 : (mem_to_reg ? mem_read_data : alu_result);
     assign debug_pc = pc_current;
+    //pc更新
 endmodule

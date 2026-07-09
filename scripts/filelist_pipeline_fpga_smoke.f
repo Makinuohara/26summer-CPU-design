@@ -1,0 +1,11 @@
+src/clk_div.v
+src/seg7_hex.v
+src/cpu/pipeline/pipeline_alu.v
+src/cpu/pipeline/pipeline_control_unit.v
+src/cpu/pipeline/pipeline_forwarding_unit.v
+src/cpu/pipeline/pipeline_hazard_unit.v
+src/cpu/pipeline/pipeline_imm_gen.v
+src/cpu/pipeline/pipeline_perf_counter.v
+src/cpu/pipeline/pipeline_regfile.v
+src/cpu/pipeline/pipeline_cpu_top.v
+src/cpu/pipeline/fpga_pipeline_cpu_smoke_top.v
