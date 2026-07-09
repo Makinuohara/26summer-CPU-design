@@ -31,26 +31,34 @@ module dmem_bus_decoder (
     output wire btn_cs,
     input wire btn_ack,
     input wire [31:0] btn_rdata,
-    input wire btn_fault
+    input wire btn_fault,
+
+    output wire intc_cs,
+    input wire intc_ack,
+    input wire [31:0] intc_rdata,
+    input wire intc_fault
 );
     wire hit_mem = dmem_addr < 32'h08000000;
     wire hit_sw = dmem_addr >= 32'h80000008 && dmem_addr <= 32'h8000000b;
     wire hit_led = dmem_addr >= 32'h8000000c && dmem_addr <= 32'h8000000f;
     wire hit_seg = dmem_addr >= 32'h80000010 && dmem_addr <= 32'h8000002f;
     wire hit_btn = dmem_addr >= 32'h80000030 && dmem_addr <= 32'h80000033;
-    wire miss = !(hit_mem || hit_sw || hit_led || hit_seg || hit_btn);
+    wire hit_intc = dmem_addr >= 32'h81000000 && dmem_addr <= 32'h81200007;
+    wire miss = !(hit_mem || hit_sw || hit_led || hit_seg || hit_btn || hit_intc);
 
     assign mem_cs = dmem_req && hit_mem;
     assign sw_cs = dmem_req && hit_sw;
     assign led_cs = dmem_req && hit_led;
     assign seg_cs = dmem_req && hit_seg;
     assign btn_cs = dmem_req && hit_btn;
+    assign intc_cs = dmem_req && hit_intc;
 
     assign dmem_ack = (mem_cs && mem_ack) ||
                       (sw_cs && sw_ack) ||
                       (led_cs && led_ack) ||
                       (seg_cs && seg_ack) ||
                       (btn_cs && btn_ack) ||
+                      (intc_cs && intc_ack) ||
                       (dmem_req && miss);
 
     assign dmem_rdata = mem_cs ? mem_rdata :
@@ -58,6 +66,7 @@ module dmem_bus_decoder (
                         led_cs ? led_rdata :
                         seg_cs ? seg_rdata :
                         btn_cs ? btn_rdata :
+                        intc_cs ? intc_rdata :
                         32'b0;
 
     assign dmem_fault = (mem_cs && mem_fault) ||
@@ -65,6 +74,7 @@ module dmem_bus_decoder (
                         (led_cs && led_fault) ||
                         (seg_cs && seg_fault) ||
                         (btn_cs && btn_fault) ||
+                        (intc_cs && intc_fault) ||
                         (dmem_req && miss);
 
     wire unused_inputs = dmem_we ^ dmem_wdata[0] ^ dmem_width[0];

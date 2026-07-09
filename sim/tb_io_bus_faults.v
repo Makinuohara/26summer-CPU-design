@@ -37,6 +37,7 @@ module tb_io_bus_faults;
     wire led_fault;
     wire seg_fault;
     wire btn_fault;
+    wire intc_cs;
 
     dmem_bus_decoder u_decoder (
         .dmem_req(req),
@@ -66,7 +67,11 @@ module tb_io_bus_faults;
         .btn_cs(btn_cs),
         .btn_ack(btn_ack),
         .btn_rdata(btn_rdata),
-        .btn_fault(btn_fault)
+        .btn_fault(btn_fault),
+        .intc_cs(intc_cs),
+        .intc_ack(intc_cs),
+        .intc_rdata(32'h1c000001),
+        .intc_fault(1'b0)
     );
 
     io_switches u_sw (
@@ -214,6 +219,12 @@ module tb_io_bus_faults;
         bus_read(32'h90000000);
         if (!ack || !fault) begin
             $display("FAIL: unmapped address should ack with fault");
+            $finish;
+        end
+
+        bus_read(32'h81000004);
+        if (!ack || fault || rdata !== 32'h1c000001) begin
+            $display("FAIL: interrupt controller window should route through decoder");
             $finish;
         end
 
