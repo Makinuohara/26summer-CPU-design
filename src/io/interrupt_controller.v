@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 module interrupt_controller (
     input wire clk,
     input wire rst_n,
@@ -9,7 +11,7 @@ module interrupt_controller (
     output wire dmem_ack,
     output reg [31:0] dmem_rdata,
     output wire dmem_fault,
-    output wire dmem_irq,
+    output wire dmem_irq, // HYW
     input wire [15:0] irq_sources,
     output wire meip
 );
@@ -17,6 +19,8 @@ module interrupt_controller (
     reg [15:0] enable;
     reg [2:0] threshold;
     reg [15:0] claimed;
+    reg [3:0] claim_hold_id;
+    reg claim_hold_valid;
     integer i;
 
     wire [31:0] offset = dmem_addr - 32'h81000000;
@@ -52,10 +56,11 @@ module interrupt_controller (
             enable <= 16'b0;
             threshold <= 3'b0;
             claimed <= 16'b0;
-            dmem_rdata <= 32'b0;
+            claim_hold_id <= 4'b0;
+            claim_hold_valid <= 1'b0;
         end else if (dmem_cs && aligned_word && valid_offset) begin
             if (dmem_we) begin
-                dmem_rdata <= 32'b0;
+                claim_hold_valid <= 1'b0;
                 if (is_priority && priority_id != 4'd0) begin
                     prio[priority_id] <= dmem_wdata[2:0];
                 end else if (is_enable) begin
@@ -65,24 +70,34 @@ module interrupt_controller (
                 end else if (is_claim && dmem_wdata[3:0] != 4'd0) begin
                     claimed[dmem_wdata[3:0]] <= 1'b0;
                 end
-            end else begin
-                if (is_priority) begin
-                    dmem_rdata <= {29'b0, prio[priority_id]};
-                end else if (is_pending) begin
-                    dmem_rdata <= {16'b0, pending};
-                end else if (is_enable) begin
-                    dmem_rdata <= {16'b0, enable};
-                end else if (is_threshold) begin
-                    dmem_rdata <= {29'b0, threshold};
-                end else if (is_claim) begin
-                    dmem_rdata <= {28'b0, best_id};
-                    if (best_id != 4'd0) begin
-                        claimed[best_id] <= 1'b1;
-                    end
+            end else if (is_claim) begin
+                claim_hold_id <= best_id;
+                claim_hold_valid <= 1'b1;
+                if (best_id != 4'd0) begin
+                    claimed[best_id] <= 1'b1;
                 end
+            end else begin
+                claim_hold_valid <= 1'b0;
             end
         end else begin
-            dmem_rdata <= 32'b0;
+            claim_hold_valid <= 1'b0;
+        end
+    end
+
+    always @(*) begin
+        dmem_rdata = 32'b0;
+        if (dmem_cs && !dmem_we && aligned_word && valid_offset) begin
+            if (is_priority) begin
+                dmem_rdata = {29'b0, prio[priority_id]};
+            end else if (is_pending) begin
+                dmem_rdata = {16'b0, pending};
+            end else if (is_enable) begin
+                dmem_rdata = {16'b0, enable};
+            end else if (is_threshold) begin
+                dmem_rdata = {29'b0, threshold};
+            end else if (is_claim) begin
+                dmem_rdata = claim_hold_valid ? {28'b0, claim_hold_id} : {28'b0, best_id};
+            end
         end
     end
 

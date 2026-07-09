@@ -4,6 +4,7 @@ module pipeline_control_unit (
     input wire [6:0] opcode,
     input wire [2:0] funct3,
     input wire [6:0] funct7,
+    input wire [31:0] instr,
     output reg reg_write,
     output reg mem_read,
     output reg mem_write,
@@ -14,7 +15,11 @@ module pipeline_control_unit (
     output reg [1:0] wb_sel,
     output reg [2:0] branch_type,
     output reg jump,
-    output reg jalr
+    output reg jalr,
+    output reg csr_en,
+    output reg [1:0] csr_op,
+    output reg csr_use_imm,
+    output reg mret
 );
     localparam OPCODE_OP     = 7'b0110011;
     localparam OPCODE_OP_IMM = 7'b0010011;
@@ -25,6 +30,7 @@ module pipeline_control_unit (
     localparam OPCODE_JALR   = 7'b1100111;
     localparam OPCODE_LUI    = 7'b0110111;
     localparam OPCODE_AUIPC  = 7'b0010111;
+    localparam OPCODE_SYSTEM = 7'b1110011;
 
     localparam ALU_ADD  = 4'd0;
     localparam ALU_SUB  = 4'd1;
@@ -65,6 +71,10 @@ module pipeline_control_unit (
         branch_type = BR_NONE;
         jump = 1'b0;
         jalr = 1'b0;
+        csr_en = 1'b0;
+        csr_op = 2'b00;
+        csr_use_imm = 1'b0;
+        mret = 1'b0;
 
         case (opcode)
             OPCODE_OP: begin
@@ -142,6 +152,16 @@ module pipeline_control_unit (
                 alu_src_imm = 1'b1;
                 alu_src_pc = 1'b1;
                 alu_ctrl = ALU_ADD;
+            end
+            OPCODE_SYSTEM: begin
+                if (instr == 32'h30200073) begin
+                    mret = 1'b1;
+                end else if (funct3 != 3'b000) begin
+                    reg_write = 1'b1;
+                    csr_en = 1'b1;
+                    csr_op = funct3[1:0];
+                    csr_use_imm = funct3[2];
+                end
             end
             default: begin
             end

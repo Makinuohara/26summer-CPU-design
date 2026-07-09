@@ -7,4 +7,10 @@ src/cpu/pipeline/pipeline_imm_gen.v
 src/cpu/pipeline/pipeline_perf_counter.v
 src/cpu/pipeline/pipeline_regfile.v
 src/cpu/pipeline/pipeline_cpu_top.v
-sim/tb_pipeline_cpu_irq.v
+src/io/dmem_bus_decoder.v
+src/io/interrupt_controller.v
+src/io/io_buttons.v
+src/io/io_leds.v
+src/io/io_seg7.v
+src/io/io_switches.v
+sim/tb_pipeline_io_integration.v

@@ -9,3 +9,9 @@ vivado_nexys4ddr/
 *.wdb
 .DS_Store
 ._*
+vivado_soc*/
+xsim.dir
+webtalk*
+xsim*
+xelab*
+xvlog*

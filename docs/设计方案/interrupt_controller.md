@@ -24,13 +24,13 @@
 
 数据总线译码器在该窗口内拉高 `intc_cs`，并把 CPU 的 `dmem_*` 事务转发给 `interrupt_controller`。
 
-| 地址 | 寄存器 | 访问 | 说明 |
-| --- | --- | --- | --- |
-| `0x8100_0004 + 4*ID` | `PRIORITY[ID]` | R/W | 中断源优先级，ID 1-15 有效，低 3 位有效 |
-| `0x8100_1000` | `PENDING` | R | 当前待决中断位 |
-| `0x8100_2000` | `ENABLE` | R/W | 中断源使能位，bit 0 强制保留 |
-| `0x8120_0000` | `THRESHOLD` | R/W | 优先级阈值，低 3 位有效 |
-| `0x8120_0004` | `CLAIM/COMPLETE` | R/W | 读返回最高优先级待处理中断 ID；写 ID 表示处理完成 |
+| 地址                   | 寄存器             | 访问 | 说明                                              |
+| ---------------------- | ------------------ | ---- | ------------------------------------------------- |
+| `0x8100_0004 + 4*ID` | `PRIORITY[ID]`   | R/W  | 中断源优先级，ID 1-15 有效，低 3 位有效           |
+| `0x8100_1000`        | `PENDING`        | R    | 当前待决中断位                                    |
+| `0x8100_2000`        | `ENABLE`         | R/W  | 中断源使能位，bit 0 强制保留                      |
+| `0x8120_0000`        | `THRESHOLD`      | R/W  | 优先级阈值，低 3 位有效                           |
+| `0x8120_0004`        | `CLAIM/COMPLETE` | R/W  | 读返回最高优先级待处理中断 ID；写 ID 表示处理完成 |
 
 未定义偏移、非 32 位字访问、写 `PENDING` 均返回 `dmem_fault=1`。
 
@@ -81,7 +81,7 @@ PS/2.dmem_irq        -> irq_sources[2]
 仿真命令：
 
 ```powershell
-& 'D:\iverilog\bin\iverilog.exe' -g2012 -s tb_interrupt_controller -o sim\interrupt_controller.vvp src\interrupt_controller.v sim\tb_interrupt_controller.v
+& 'D:\iverilog\bin\iverilog.exe' -g2012 -s tb_interrupt_controller -o sim\interrupt_controller.vvp src\io\interrupt_controller.v sim\tb_interrupt_controller.v
 & 'D:\iverilog\bin\vvp.exe' sim\interrupt_controller.vvp
 ```
 

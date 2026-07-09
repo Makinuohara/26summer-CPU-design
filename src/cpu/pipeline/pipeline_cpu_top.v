@@ -29,26 +29,7 @@ module pipeline_cpu_top (
     output wire [31:0] debug_flush,
     output wire [31:0] debug_x5
 );
-    localparam OPCODE_OP     = 7'b0110011;
-    localparam OPCODE_OP_IMM = 7'b0010011;
-    localparam OPCODE_LOAD   = 7'b0000011;
-    localparam OPCODE_STORE  = 7'b0100011;
-    localparam OPCODE_BRANCH = 7'b1100011;
-    localparam OPCODE_JAL    = 7'b1101111;
-    localparam OPCODE_JALR   = 7'b1100111;
-    localparam OPCODE_LUI    = 7'b0110111;
-    localparam OPCODE_AUIPC  = 7'b0010111;
-
     localparam ALU_ADD = 4'd0;
-    localparam ALU_SUB = 4'd1;
-    localparam ALU_AND = 4'd2;
-    localparam ALU_OR  = 4'd3;
-    localparam ALU_XOR = 4'd4;
-    localparam ALU_SLL = 4'd5;
-    localparam ALU_SRL = 4'd6;
-    localparam ALU_SRA = 4'd7;
-    localparam ALU_SLT = 4'd8;
-    localparam ALU_SLTU = 4'd9;
 
     localparam WB_ALU = 2'd0;
     localparam WB_MEM = 2'd1;
@@ -76,6 +57,7 @@ module pipeline_cpu_top (
     reg [31:0] id_ex_rs1_data;
     reg [31:0] id_ex_rs2_data;
     reg [31:0] id_ex_imm;
+    reg [31:0] id_ex_csr_rdata;
     reg [4:0] id_ex_rs1;
     reg [4:0] id_ex_rs2;
     reg [4:0] id_ex_rd;
@@ -90,12 +72,19 @@ module pipeline_cpu_top (
     reg [2:0] id_ex_branch_type;
     reg id_ex_jump;
     reg id_ex_jalr;
+    reg id_ex_csr_en;
+    reg [1:0] id_ex_csr_op;
+    reg id_ex_csr_use_imm;
+    reg [11:0] id_ex_csr_addr;
+    reg id_ex_mret;
 
     reg ex_mem_valid;
+    reg [31:0] ex_mem_pc;
     reg [31:0] ex_mem_pc4;
     reg [31:0] ex_mem_alu_result;
     reg [31:0] ex_mem_store_data;
     reg [31:0] ex_mem_imm;
+    reg [31:0] ex_mem_csr_wdata;
     reg [4:0] ex_mem_rd;
     reg ex_mem_reg_write;
     reg ex_mem_mem_read;
@@ -103,16 +92,27 @@ module pipeline_cpu_top (
     reg [1:0] ex_mem_mem_width;
     reg [1:0] ex_mem_wb_sel;
     reg ex_mem_fault;
+    reg ex_mem_csr_en;
+    reg [1:0] ex_mem_csr_op;
+    reg [11:0] ex_mem_csr_addr;
 
     reg mem_wb_valid;
+    reg [31:0] mem_wb_pc;
     reg [31:0] mem_wb_pc4;
     reg [31:0] mem_wb_alu_result;
     reg [31:0] mem_wb_mem_data;
     reg [31:0] mem_wb_imm;
+    reg [31:0] mem_wb_csr_wdata;
     reg [4:0] mem_wb_rd;
     reg mem_wb_reg_write;
     reg [1:0] mem_wb_wb_sel;
     reg mem_wb_fault;
+    reg mem_wb_csr_en;
+    reg [1:0] mem_wb_csr_op;
+    reg [11:0] mem_wb_csr_addr;
+
+    reg interrupt_drain_active;
+    reg [31:0] interrupt_resume_pc;
 
     wire [6:0] if_id_opcode = if_id_instr[6:0];
     wire [4:0] if_id_rd = if_id_instr[11:7];
@@ -120,21 +120,22 @@ module pipeline_cpu_top (
     wire [4:0] if_id_rs1 = if_id_instr[19:15];
     wire [4:0] if_id_rs2 = if_id_instr[24:20];
     wire [6:0] if_id_funct7 = if_id_instr[31:25];
+    wire [11:0] if_id_csr_addr = if_id_instr[31:20];
 
     wire [31:0] wb_data =
         (mem_wb_wb_sel == WB_MEM) ? mem_wb_mem_data :
         (mem_wb_wb_sel == WB_PC4) ? mem_wb_pc4 :
         (mem_wb_wb_sel == WB_IMM) ? mem_wb_imm :
                                     mem_wb_alu_result;
+
     wire [31:0] ex_mem_write_data =
         (ex_mem_wb_sel == WB_PC4) ? ex_mem_pc4 :
         (ex_mem_wb_sel == WB_IMM) ? ex_mem_imm :
                                     ex_mem_alu_result;
 
-    wire trap_pending = meip | mtip | msip;
-    wire wb_write = mem_wb_valid && mem_wb_reg_write && !mem_wb_fault && !trap_pending;
     wire [31:0] rs1_data;
     wire [31:0] rs2_data;
+    wire wb_write = mem_wb_valid && mem_wb_reg_write && !mem_wb_fault;
 
     pipeline_regfile u_regfile (
         .clk(clk),
@@ -160,11 +161,16 @@ module pipeline_cpu_top (
     wire [2:0] dec_branch_type;
     wire dec_jump;
     wire dec_jalr;
+    wire dec_csr_en;
+    wire [1:0] dec_csr_op;
+    wire dec_csr_use_imm;
+    wire dec_mret;
 
     pipeline_control_unit u_control (
         .opcode(if_id_opcode),
         .funct3(if_id_funct3),
         .funct7(if_id_funct7),
+        .instr(if_id_instr),
         .reg_write(dec_reg_write),
         .mem_read(dec_mem_read),
         .mem_write(dec_mem_write),
@@ -175,7 +181,11 @@ module pipeline_cpu_top (
         .wb_sel(dec_wb_sel),
         .branch_type(dec_branch_type),
         .jump(dec_jump),
-        .jalr(dec_jalr)
+        .jalr(dec_jalr),
+        .csr_en(dec_csr_en),
+        .csr_op(dec_csr_op),
+        .csr_use_imm(dec_csr_use_imm),
+        .mret(dec_mret)
     );
 
     wire [31:0] dec_imm;
@@ -195,6 +205,7 @@ module pipeline_cpu_top (
         .if_id_rs1(if_id_rs1),
         .if_id_rs2(if_id_rs2),
         .if_id_opcode(if_id_opcode),
+        .if_id_funct3(if_id_funct3),
         .load_use_stall(load_use_stall)
     );
 
@@ -235,6 +246,40 @@ module pipeline_cpu_top (
         .result(alu_result)
     );
 
+    wire [31:0] csr_read_data;
+    wire [31:0] csr_mtvec;
+    wire [31:0] csr_mepc;
+    wire irq_pending;
+    wire [31:0] irq_cause;
+    wire take_interrupt_trap;
+    wire mret_take = id_ex_valid && id_ex_mret && !global_stall;
+
+    pipeline_csr_unit u_csr (
+        .clk(clk),
+        .rst_n(rst_n),
+        .read_addr(if_id_csr_addr),
+        .read_data(csr_read_data),
+        .wb_valid(mem_wb_valid && !mem_wb_fault),
+        .wb_csr_en(mem_wb_csr_en),
+        .wb_csr_op(mem_wb_csr_op),
+        .wb_csr_addr(mem_wb_csr_addr),
+        .wb_csr_wdata(mem_wb_csr_wdata),
+        .trap_take(take_interrupt_trap),
+        .trap_pc(interrupt_resume_pc),
+        .trap_cause(irq_cause),
+        .mret_take(mret_take),
+        .meip(meip),
+        .mtip(mtip),
+        .msip(msip),
+        .mtvec_value(csr_mtvec),
+        .mepc_value(csr_mepc),
+        .irq_pending(irq_pending),
+        .irq_cause(irq_cause)
+    );
+
+    wire [31:0] csr_ex_wdata = id_ex_csr_use_imm ? {27'b0, id_ex_rs1} : fwd_rs1;
+    wire [31:0] ex_result = id_ex_csr_en ? id_ex_csr_rdata : alu_result;
+
     wire branch_taken = id_ex_valid && (
         (id_ex_branch_type == BR_BEQ  && (fwd_rs1 == fwd_rs2)) ||
         (id_ex_branch_type == BR_BNE  && (fwd_rs1 != fwd_rs2)) ||
@@ -244,12 +289,20 @@ module pipeline_cpu_top (
         (id_ex_branch_type == BR_BGEU && (fwd_rs1 >= fwd_rs2))
     );
     wire jump_taken = id_ex_valid && id_ex_jump;
-    wire redirect = branch_taken || jump_taken;
+    wire redirect_exec = branch_taken || jump_taken || mret_take;
     wire [31:0] branch_target = id_ex_pc + id_ex_imm;
     wire [31:0] jalr_target = (fwd_rs1 + id_ex_imm) & 32'hffff_fffe;
-    wire [31:0] redirect_pc = id_ex_jalr ? jalr_target : branch_target;
+    wire [31:0] redirect_pc =
+        mret_take ? csr_mepc :
+        id_ex_jalr ? jalr_target :
+                     branch_target;
 
-    assign imem_req = rst_n;
+    wire pipeline_empty = !if_id_valid && !id_ex_valid && !ex_mem_valid && !mem_wb_valid;
+    wire enter_interrupt_drain = irq_pending && !interrupt_drain_active && !redirect_exec && !global_stall;
+    assign take_interrupt_trap = interrupt_drain_active && pipeline_empty && !global_stall;
+    wire perf_flush = (!global_stall) && (redirect_exec || enter_interrupt_drain || take_interrupt_trap);
+
+    assign imem_req = rst_n && !interrupt_drain_active;
     assign imem_addr = pc;
 
     assign dmem_req = mem_active;
@@ -264,8 +317,8 @@ module pipeline_cpu_top (
         .clk(clk),
         .rst_n(rst_n),
         .stall(global_stall),
-        .flush(redirect && !global_stall),
-        .instret(mem_wb_valid && !mem_wb_fault && !trap_pending),
+        .flush(perf_flush),
+        .instret(mem_wb_valid && !mem_wb_fault),
         .cycle_count(debug_cycle),
         .instret_count(debug_instret),
         .stall_count(debug_stall),
@@ -278,7 +331,7 @@ module pipeline_cpu_top (
             if_id_valid <= 1'b0;
             if_id_pc <= 32'b0;
             if_id_pc4 <= 32'b0;
-            if_id_instr <= 32'h00000013;
+            if_id_instr <= 32'h0000_0013;
 
             id_ex_valid <= 1'b0;
             id_ex_pc <= 32'b0;
@@ -286,6 +339,7 @@ module pipeline_cpu_top (
             id_ex_rs1_data <= 32'b0;
             id_ex_rs2_data <= 32'b0;
             id_ex_imm <= 32'b0;
+            id_ex_csr_rdata <= 32'b0;
             id_ex_rs1 <= 5'b0;
             id_ex_rs2 <= 5'b0;
             id_ex_rd <= 5'b0;
@@ -300,12 +354,19 @@ module pipeline_cpu_top (
             id_ex_branch_type <= BR_NONE;
             id_ex_jump <= 1'b0;
             id_ex_jalr <= 1'b0;
+            id_ex_csr_en <= 1'b0;
+            id_ex_csr_op <= 2'b00;
+            id_ex_csr_use_imm <= 1'b0;
+            id_ex_csr_addr <= 12'b0;
+            id_ex_mret <= 1'b0;
 
             ex_mem_valid <= 1'b0;
+            ex_mem_pc <= 32'b0;
             ex_mem_pc4 <= 32'b0;
             ex_mem_alu_result <= 32'b0;
             ex_mem_store_data <= 32'b0;
             ex_mem_imm <= 32'b0;
+            ex_mem_csr_wdata <= 32'b0;
             ex_mem_rd <= 5'b0;
             ex_mem_reg_write <= 1'b0;
             ex_mem_mem_read <= 1'b0;
@@ -313,18 +374,77 @@ module pipeline_cpu_top (
             ex_mem_mem_width <= 2'b00;
             ex_mem_wb_sel <= WB_ALU;
             ex_mem_fault <= 1'b0;
+            ex_mem_csr_en <= 1'b0;
+            ex_mem_csr_op <= 2'b00;
+            ex_mem_csr_addr <= 12'b0;
 
             mem_wb_valid <= 1'b0;
+            mem_wb_pc <= 32'b0;
             mem_wb_pc4 <= 32'b0;
             mem_wb_alu_result <= 32'b0;
             mem_wb_mem_data <= 32'b0;
             mem_wb_imm <= 32'b0;
+            mem_wb_csr_wdata <= 32'b0;
             mem_wb_rd <= 5'b0;
             mem_wb_reg_write <= 1'b0;
             mem_wb_wb_sel <= WB_ALU;
             mem_wb_fault <= 1'b0;
+            mem_wb_csr_en <= 1'b0;
+            mem_wb_csr_op <= 2'b00;
+            mem_wb_csr_addr <= 12'b0;
+
+            interrupt_drain_active <= 1'b0;
+            interrupt_resume_pc <= 32'b0;
+        end else if (take_interrupt_trap) begin
+            pc <= csr_mtvec;
+            if_id_valid <= 1'b0;
+            id_ex_valid <= 1'b0;
+            ex_mem_valid <= 1'b0;
+            mem_wb_valid <= 1'b0;
+            interrupt_drain_active <= 1'b0;
         end else if (!global_stall) begin
-            if (redirect) begin
+            interrupt_drain_active <= interrupt_drain_active || enter_interrupt_drain;
+            if (enter_interrupt_drain) begin
+                interrupt_resume_pc <= pc;
+            end else if (interrupt_drain_active && redirect_exec) begin
+                interrupt_resume_pc <= redirect_pc;
+            end
+
+            if (enter_interrupt_drain) begin
+                pc <= pc;
+                if_id_valid <= 1'b0;
+
+                id_ex_valid <= if_id_valid;
+                id_ex_pc <= if_id_pc;
+                id_ex_pc4 <= if_id_pc4;
+                id_ex_rs1_data <= rs1_data;
+                id_ex_rs2_data <= rs2_data;
+                id_ex_imm <= dec_imm;
+                id_ex_csr_rdata <= csr_read_data;
+                id_ex_rs1 <= if_id_rs1;
+                id_ex_rs2 <= if_id_rs2;
+                id_ex_rd <= if_id_rd;
+                id_ex_reg_write <= dec_reg_write;
+                id_ex_mem_read <= dec_mem_read;
+                id_ex_mem_write <= dec_mem_write;
+                id_ex_mem_width <= dec_mem_width;
+                id_ex_alu_src_imm <= dec_alu_src_imm;
+                id_ex_alu_src_pc <= dec_alu_src_pc;
+                id_ex_alu_ctrl <= dec_alu_ctrl;
+                id_ex_wb_sel <= dec_wb_sel;
+                id_ex_branch_type <= dec_branch_type;
+                id_ex_jump <= dec_jump;
+                id_ex_jalr <= dec_jalr;
+                id_ex_csr_en <= dec_csr_en;
+                id_ex_csr_op <= dec_csr_op;
+                id_ex_csr_use_imm <= dec_csr_use_imm;
+                id_ex_csr_addr <= if_id_csr_addr;
+                id_ex_mret <= dec_mret;
+            end else if (interrupt_drain_active) begin
+                pc <= redirect_exec ? redirect_pc : pc;
+                if_id_valid <= 1'b0;
+                id_ex_valid <= 1'b0;
+            end else if (redirect_exec) begin
                 pc <= redirect_pc;
                 if_id_valid <= 1'b0;
                 id_ex_valid <= 1'b0;
@@ -341,6 +461,7 @@ module pipeline_cpu_top (
                 id_ex_rs1_data <= rs1_data;
                 id_ex_rs2_data <= rs2_data;
                 id_ex_imm <= dec_imm;
+                id_ex_csr_rdata <= csr_read_data;
                 id_ex_rs1 <= if_id_rs1;
                 id_ex_rs2 <= if_id_rs2;
                 id_ex_rd <= if_id_rd;
@@ -355,13 +476,20 @@ module pipeline_cpu_top (
                 id_ex_branch_type <= dec_branch_type;
                 id_ex_jump <= dec_jump;
                 id_ex_jalr <= dec_jalr;
+                id_ex_csr_en <= dec_csr_en;
+                id_ex_csr_op <= dec_csr_op;
+                id_ex_csr_use_imm <= dec_csr_use_imm;
+                id_ex_csr_addr <= if_id_csr_addr;
+                id_ex_mret <= dec_mret;
             end
 
             ex_mem_valid <= id_ex_valid;
+            ex_mem_pc <= id_ex_pc;
             ex_mem_pc4 <= id_ex_pc4;
-            ex_mem_alu_result <= alu_result;
+            ex_mem_alu_result <= ex_result;
             ex_mem_store_data <= fwd_rs2;
             ex_mem_imm <= id_ex_imm;
+            ex_mem_csr_wdata <= csr_ex_wdata;
             ex_mem_rd <= id_ex_rd;
             ex_mem_reg_write <= id_ex_reg_write;
             ex_mem_mem_read <= id_ex_mem_read;
@@ -369,27 +497,39 @@ module pipeline_cpu_top (
             ex_mem_mem_width <= id_ex_mem_width;
             ex_mem_wb_sel <= id_ex_wb_sel;
             ex_mem_fault <= 1'b0;
+            ex_mem_csr_en <= id_ex_csr_en;
+            ex_mem_csr_op <= id_ex_csr_op;
+            ex_mem_csr_addr <= id_ex_csr_addr;
 
             mem_wb_valid <= ex_mem_valid;
+            mem_wb_pc <= ex_mem_pc;
             mem_wb_pc4 <= ex_mem_pc4;
             mem_wb_alu_result <= ex_mem_alu_result;
             mem_wb_mem_data <= dmem_rdata;
             mem_wb_imm <= ex_mem_imm;
+            mem_wb_csr_wdata <= ex_mem_csr_wdata;
             mem_wb_rd <= ex_mem_rd;
             mem_wb_reg_write <= ex_mem_reg_write;
             mem_wb_wb_sel <= ex_mem_wb_sel;
             mem_wb_fault <= ex_mem_fault || (mem_active && dmem_fault);
+            mem_wb_csr_en <= ex_mem_csr_en;
+            mem_wb_csr_op <= ex_mem_csr_op;
+            mem_wb_csr_addr <= ex_mem_csr_addr;
         end else if (load_use_stall && !imem_wait && !dmem_wait) begin
             id_ex_valid <= 1'b0;
             id_ex_reg_write <= 1'b0;
             id_ex_mem_read <= 1'b0;
             id_ex_mem_write <= 1'b0;
+            id_ex_csr_en <= 1'b0;
+            id_ex_mret <= 1'b0;
 
             ex_mem_valid <= id_ex_valid;
+            ex_mem_pc <= id_ex_pc;
             ex_mem_pc4 <= id_ex_pc4;
-            ex_mem_alu_result <= alu_result;
+            ex_mem_alu_result <= ex_result;
             ex_mem_store_data <= fwd_rs2;
             ex_mem_imm <= id_ex_imm;
+            ex_mem_csr_wdata <= csr_ex_wdata;
             ex_mem_rd <= id_ex_rd;
             ex_mem_reg_write <= id_ex_reg_write;
             ex_mem_mem_read <= id_ex_mem_read;
@@ -397,16 +537,24 @@ module pipeline_cpu_top (
             ex_mem_mem_width <= id_ex_mem_width;
             ex_mem_wb_sel <= id_ex_wb_sel;
             ex_mem_fault <= 1'b0;
+            ex_mem_csr_en <= id_ex_csr_en;
+            ex_mem_csr_op <= id_ex_csr_op;
+            ex_mem_csr_addr <= id_ex_csr_addr;
 
             mem_wb_valid <= ex_mem_valid;
+            mem_wb_pc <= ex_mem_pc;
             mem_wb_pc4 <= ex_mem_pc4;
             mem_wb_alu_result <= ex_mem_alu_result;
             mem_wb_mem_data <= dmem_rdata;
             mem_wb_imm <= ex_mem_imm;
+            mem_wb_csr_wdata <= ex_mem_csr_wdata;
             mem_wb_rd <= ex_mem_rd;
             mem_wb_reg_write <= ex_mem_reg_write;
             mem_wb_wb_sel <= ex_mem_wb_sel;
             mem_wb_fault <= ex_mem_fault || (mem_active && dmem_fault);
+            mem_wb_csr_en <= ex_mem_csr_en;
+            mem_wb_csr_op <= ex_mem_csr_op;
+            mem_wb_csr_addr <= ex_mem_csr_addr;
         end
     end
 

@@ -7,4 +7,8 @@ src/cpu/pipeline/pipeline_imm_gen.v
 src/cpu/pipeline/pipeline_perf_counter.v
 src/cpu/pipeline/pipeline_regfile.v
 src/cpu/pipeline/pipeline_cpu_top.v
-sim/tb_pipeline_cpu_irq.v
+src/io/dmem_bus_decoder.v
+src/memory/cache.v
+src/memory/dmem.v
+src/memory/imem.v
+sim/tb_pipeline_memory_integration.v

@@ -1,49 +1,61 @@
-
 # 存储子系统设计方案
 
 ## 1. 设计目标
 
-存储子系统负责提供阶段二 SoC 的指令存储、数据存储和缓存能力，并严格遵循
-`docs/设计方案/architect.md` 中定义的总线接口契约。
-
-本版实现目标不是“最小能跑”，而是可直接参与后续系统联调的成熟版本：
-
-1. 指令侧提供独立 `imem_req/imem_ack/imem_data` 握手接口。
-2. 数据侧提供可挂到总线译码器后的标准设备接口。
-3. 数据存储器支持 `word/half/byte` 访问和写掩码。
-4. D-Cache 提供真实命中/失效行为，不再使用假数据占位。
-5. 所有读返回值遵循架构文档要求：`dmem_rdata` 返回原始 32 位字。
-
-## 2. 模块划分
-
-建议源码结构如下：
+存储子系统按照 `architect.md` 的系统约束重新收口为 3 个核心模块：
 
 ```text
 src/memory/
-  memory_array.v
   imem.v
-  dmem_store.v
-  dcache.v
-  dmem_cached_device.v
-  memory_subsystem.v
+  dmem.v
+  cache.v
 ```
 
-各模块职责：
+设计目标如下：
+
+1. `imem` 服务 CPU 独立取指通路，遵循 `imem_req/imem_ack/imem_data` 握手。
+2. `dmem` 作为数据总线下挂设备，接口风格与 I/O 模块保持一致，便于直接接入 `src/io/dmem_bus_decoder.v`。
+3. `cache` 只负责缓存控制逻辑，不再额外拆出独立的 `store`/`subsystem`/`device wrapper` 文件。
+4. `imem` 和 `dmem` 的公共存储后端逻辑抽取为共享内部层，不再在两个模块内重复实现。
+5. `dmem_rdata` 始终返回原始 32 位字，由 CPU 自行完成字节/半字提取和符号扩展。
+
+## 1.1 中断边界
+
+存储子系统本身**不负责中断控制**。
+
+具体边界如下：
+
+1. `imem` 只是指令存储器，不产生中断。
+2. `cache` 只是性能与访问时序优化层，不产生中断。
+3. `dmem` 虽然作为数据总线下挂设备实现统一设备接口，但仅保留 `dmem_irq` 端口用于接口一致性，当前固定输出 `0`。
+4. 真正的中断请求由 I/O 设备和 `interrupt_controller` 负责，存储模块不参与 `meip/mtip/msip` 的生成与仲裁。
+
+因此，后续 CPU 中断联调时：
+
+- `imem` 无需改动
+- `cache` 无需改动
+- `dmem` 仅保持 `dmem_irq = 1'b0`
+- 中断路径应连接 `io_* -> interrupt_controller -> CPU(meip)`
+
+## 2. 模块职责
 
 | 模块 | 责任 |
 | --- | --- |
-| `memory_array.v` | 底层字寻址存储阵列，支持字节写使能 |
-| `imem.v` | 指令存储器，服务 CPU 独立取指通路 |
-| `dmem_store.v` | 数据存储后端，处理真实字节/半字/字写入 |
-| `dcache.v` | 直接映射 D-Cache，处理命中、失效、填充 |
-| `dmem_cached_device.v` | 对外暴露为总线设备的缓存数据存储器 |
-| `memory_subsystem.v` | 独立联调用封装，同时输出 IMEM/DMEM 两类接口 |
+| `imem.v` | 指令存储器，面向 CPU 取指总线 |
+| `dmem.v` | 数据存储设备，面向数据总线译码器 |
+| `cache.v` | 直接映射 D-Cache，处理 hit/miss/fill/write-through |
 
-## 3. 指令存储器
+此外，`src/memory/memory_internal.vh` 提供共享内部模块 `memory_backend_core`，统一封装：
+
+- 存储阵列
+- 初始化加载
+- 地址越界检测
+- 可配置响应延迟
+- 写掩码写入
+
+## 3. `imem.v`
 
 ### 3.1 接口
-
-`imem.v` 使用以下接口：
 
 ```verilog
 module imem (
@@ -58,82 +70,19 @@ module imem (
 
 ### 3.2 行为
 
-1. `imem_addr` 必须按 4 字节对齐。
-2. 当 `RESP_LATENCY=0` 时，取指可单周期完成。
-3. 当 `RESP_LATENCY>0` 时，`imem` 在内部记录请求地址，等待若干周期后返回 `ack`。
-4. 地址越界或未对齐时返回 `NOP (32'h00000013)`，不主动 fault。
+1. `imem` 不参与数据总线译码，保持哈佛结构中的独立指令通道。
+2. 通过 `MEM_LATENCY` 参数支持单周期或多周期返回。
+3. 地址未对齐或越界时返回 `NOP (32'h0000_0013)`。
+4. 程序初始化通过 `INIT_FILE` 装载。
 
-这样既可用于 BRAM 单周期模式，也可模拟后续外部存储等待周期。
+## 4. `dmem.v`
 
-## 4. 数据后端
+### 4.1 接口
 
-### 4.1 原始存储模型
-
-`dmem_store.v` 是数据存储的真实后端，不对读数据做任何符号扩展。
-
-读语义：
-
-- 无论指令是 `lb/lh/lw/lbu/lhu` 中的哪一种，后端都返回地址所在字的完整 32 位内容。
-- 由 CPU 根据 `addr[1:0]` 和指令类型自行提取并做符号/零扩展。
-
-写语义：
-
-- `word`：四字节全写
-- `half`：根据 `addr[1]` 写低半字或高半字
-- `byte`：根据 `addr[1:0]` 写对应字节
-
-### 4.2 错误处理
-
-`dmem_store.v` 在以下情况下置 `fault=1`：
-
-1. 访问超出配置的物理存储深度
-2. `word` 访问未按字对齐
-3. `half` 访问未按半字对齐
-
-## 5. D-Cache 设计
-
-### 5.1 组织方式
-
-当前实现采用：
-
-- 直接映射（direct-mapped）
-- 一组一行
-- 每行 `LINE_WORDS` 个 32 位字
-- 写直达（write-through）
-- 写不分配（write-no-allocate）
-
-### 5.2 读命中
-
-若 `valid[index]==1` 且 `tag` 匹配：
-
-1. 直接返回缓存行内对应字
-2. `dmem_ack=1`
-3. 不访问后端存储
-
-### 5.3 读失效
-
-若缓存失效：
-
-1. 计算缓存行基址
-2. 逐字向 `dmem_store` 发起读取
-3. 读取完成后写入 cache line
-4. 返回请求字并置 `dmem_ack=1`
-
-### 5.4 写策略
-
-写请求统一写入后端：
-
-- 命中：同时更新 cache line 中对应字节
-- 失效：只写后端，不分配新 cache line
-
-该策略实现简单、行为明确，适合课程阶段二系统联调。
-
-## 6. 总线设备接口
-
-`dmem_cached_device.v` 按 `architect.md` 的设备契约实现：
+`dmem.v` 按照数据总线设备规范实现，接口和 I/O 设备一致：
 
 ```verilog
-module dmem_cached_device (
+module dmem (
     input  wire        clk,
     input  wire        rst_n,
     input  wire        dmem_cs,
@@ -148,38 +97,140 @@ module dmem_cached_device (
 );
 ```
 
-其中：
+### 4.2 与译码器的连接方式
 
-- `dmem_cs==0` 时该设备保持空闲
-- `dmem_irq` 恒为 `0`
-- 可直接作为总线译码器 `cs[0]` 指向的数据存储设备
+`dmem.v` 不是 CPU 私有 RAM，而是通过 I/O 分支已经完成的总线译码器接入：
 
-## 7. 独立联调封装
+```text
+CPU dmem_* -> dmem_bus_decoder -> mem_cs/mem_ack/mem_rdata/mem_fault -> dmem
+```
 
-`memory_subsystem.v` 为 CPU 单独联调提供一个统一封装：
+也就是说，`dmem_bus_decoder` 的 `mem_*` 端口就是给 `dmem.v` 预留的：
 
-1. 指令侧直连 `imem`
-2. 数据侧直连 `dmem_cached_device`
+```verilog
+output wire mem_cs,
+input  wire mem_ack,
+input  wire [31:0] mem_rdata,
+input  wire mem_fault
+```
 
-这样在 SoC 总线尚未完全接入前，CPU 团队可以先完成独立联调；
-后续系统集成时，只需保留 `imem.v` 和 `dmem_cached_device.v` 两个边界模块即可。
+后续系统顶层集成时应连接为：
 
-## 8. 与系统架构的匹配关系
+```verilog
+.mem_cs(dmem_mem_cs),
+.mem_ack(dmem_mem_ack),
+.mem_rdata(dmem_mem_rdata),
+.mem_fault(dmem_mem_fault)
+```
 
-| 架构要求 | 当前实现方式 |
-| --- | --- |
-| 哈佛结构 | `imem` 与 `dmem` 分离 |
-| `req/ack` 握手 | `imem`、`dmem_store`、`dcache` 全部支持等待周期 |
-| 数据总线原始 32 位返回 | `dmem_store` / `dcache` 不做扩展 |
-| Cache 使用 BRAM 思路 | 使用字阵列+缓存行模型 |
-| 数据存储器为总线下挂设备 | `dmem_cached_device.v` 暴露标准设备接口 |
+然后由 `dmem.v` 实例输出对应返回信号。
 
-## 9. 后续可扩展点
+### 4.3 内部结构
 
-当前版本已经满足阶段二成熟联调需求，但仍预留以下扩展空间：
+`dmem.v` 内部包含两部分：
 
-1. 指令存储器初始化改为由 bitstream/COE/MIF 文件加载
-2. D-Cache 增加写回（write-back）和脏位
-3. 增加 cache hit/miss 统计寄存器并通过总线映射输出
-4. 对接 DDR 控制器，将 `dmem_store` 替换为更慢的外部主存接口
-5. 增加 I-Cache，将 `imem` 的后端从 ROM 扩展为层次化存储
+1. 一个实例化的 `cache.v`
+2. 一个共享后端 `memory_backend_core`
+
+因此虽然对外交付仍然是三模块结构，但内部层次已经收敛为：
+
+```text
+数据总线 -> dmem -> cache -> memory_backend_core
+```
+
+### 4.4 访问语义
+
+1. 支持 `word / half / byte` 写入
+2. 读返回包含目标字节所在整字的原始 32 位值
+3. 地址超出物理容量时返回 `dmem_fault=1`
+4. `dmem_irq` 恒为 `0`
+
+### 4.5 为什么 `dmem` 不做中断
+
+`dmem` 的职责是“数据存储设备”，不是“事件源设备”。
+
+它和 LED、按键、PS/2、中断控制器不同：
+
+- `dmem` 不承载外部异步事件
+- `dmem` 不需要向 CPU 报告“状态变化”
+- `dmem` 的异常只通过 `dmem_fault` 表示访存错误，不通过中断表示
+
+所以从系统架构上，存储模块不应自行拉起中断请求线。
+
+## 5. `cache.v`
+
+### 5.1 组织方式
+
+当前缓存设计为：
+
+- 直接映射
+- 每行 `LINE_WORDS` 个 32 位字
+- 写直达（write-through）
+- 写不分配（write-no-allocate）
+
+### 5.2 CPU/设备侧接口
+
+`cache.v` 面向 `dmem.v` 的上层请求：
+
+```verilog
+req / addr / we / wdata / width
+```
+
+返回：
+
+```verilog
+ack / rdata / fault
+```
+
+### 5.3 后端侧接口
+
+`cache.v` 不直接操作顶层总线，而是通过一组内部后端接口访问共享存储后端：
+
+```verilog
+mem_req / mem_we / mem_addr / mem_wdata / mem_wstrb
+mem_ack / mem_rdata / mem_fault
+```
+
+### 5.4 行为
+
+读命中：
+
+1. 直接从缓存行返回
+2. 不访问后端物理存储
+
+读失效：
+
+1. 计算 line base address
+2. 逐字向后端请求
+3. 填满整行
+4. 返回请求字
+
+写命中：
+
+1. 更新缓存行对应字节
+2. 同时写后端物理存储
+
+写失效：
+
+1. 不分配新 cache line
+2. 直接写后端物理存储
+
+## 6. 当前版本的边界
+
+这版存储系统已经符合当前架构方向，但仍有明确边界：
+
+1. `imem` 仍然是独立指令存储器，不和 I/O 共用数据总线
+2. `dmem` 已经按“总线设备”形式实现，可直接挂到 `dmem_bus_decoder`
+3. 存储模块不承担中断源职责，`dmem_irq` 当前固定为 `0`
+4. cache 统计寄存器、DDR 后端替换、I-Cache 还未展开
+
+## 7. 推荐集成方式
+
+系统顶层建议这样接：
+
+1. CPU 的 `imem_*` 直接连接 `imem.v`
+2. CPU 的 `dmem_*` 先连接 `src/io/dmem_bus_decoder.v`
+3. 译码器的 `mem_*` 端口再连接 `dmem.v`
+4. 译码器其余 `sw/led/seg/btn/intc` 端口连接各 I/O 模块
+
+这样 CPU、内存和 I/O 的职责边界是清楚的，后续联调也最稳定。

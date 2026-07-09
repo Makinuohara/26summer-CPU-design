@@ -2,6 +2,7 @@ src/clk_div.v
 src/seg7_hex.v
 src/cpu/pipeline/pipeline_alu.v
 src/cpu/pipeline/pipeline_control_unit.v
+src/cpu/pipeline/pipeline_csr_unit.v
 src/cpu/pipeline/pipeline_forwarding_unit.v
 src/cpu/pipeline/pipeline_hazard_unit.v
 src/cpu/pipeline/pipeline_imm_gen.v
