@@ -20,7 +20,10 @@ module io_seg7 (
     reg [7:0] hex_value;
     reg [7:0] raw_digits [0:7];
     reg [15:0] scan_counter;
-    wire [2:0] scan_index = scan_counter[15:13];
+    // scan_clk is already divided down at the top level, so use the low bits here.
+    // Using scan_counter[15:13] makes digit switching so slow on board that it
+    // looks like the display is stuck on a single digit for seconds.
+    wire [2:0] scan_index = scan_counter[2:0];
     wire valid_access = dmem_width == 2'b00 && dmem_addr[1:0] == 2'b00;
     wire [3:0] reg_index = dmem_addr[5:2] - 4'd4;
     integer i;
@@ -92,11 +95,18 @@ module io_seg7 (
         an = 8'b11111111;
         seg = 7'b1111111;
         if (enabled) begin
-            an[scan_index] = 1'b0;
             case (scan_index)
-                3'd0: seg = hex_to_seg(hex_value[3:0]);
-                3'd1: seg = hex_to_seg(hex_value[7:4]);
-                default: seg = 7'b1000000;
+                3'd0: begin
+                    an[0] = 1'b0;
+                    seg = hex_to_seg(hex_value[3:0]);
+                end
+                3'd1: begin
+                    an[1] = 1'b0;
+                    seg = hex_to_seg(hex_value[7:4]);
+                end
+                default: begin
+                    seg = 7'b1111111;
+                end
             endcase
         end
     end

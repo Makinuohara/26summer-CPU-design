@@ -113,6 +113,7 @@ module pipeline_cpu_top (
 
     reg interrupt_drain_active;
     reg [31:0] interrupt_resume_pc;
+    reg discard_imem_resp;
 
     wire [6:0] if_id_opcode = if_id_instr[6:0];
     wire [4:0] if_id_rd = if_id_instr[11:7];
@@ -212,7 +213,11 @@ module pipeline_cpu_top (
     wire mem_active = ex_mem_valid && (ex_mem_mem_read || ex_mem_mem_write);
     wire imem_wait = imem_req && !imem_ack;
     wire dmem_wait = mem_active && !dmem_ack;
-    wire global_stall = imem_wait || dmem_wait || load_use_stall;
+    // Front-end fetch wait should not freeze the older pipeline stages. Otherwise
+    // an instruction already sitting in IF/ID only moves forward when the *next*
+    // instruction arrives, and older EX/MEM/WB stages can be replayed or delayed.
+    wire pipeline_stall = dmem_wait || load_use_stall;
+    wire perf_stall = imem_wait || pipeline_stall;
 
     wire [31:0] fwd_rs1;
     wire [31:0] fwd_rs2;
@@ -252,7 +257,7 @@ module pipeline_cpu_top (
     wire irq_pending;
     wire [31:0] irq_cause;
     wire take_interrupt_trap;
-    wire mret_take = id_ex_valid && id_ex_mret && !global_stall;
+    wire mret_take = id_ex_valid && id_ex_mret && !pipeline_stall;
 
     pipeline_csr_unit u_csr (
         .clk(clk),
@@ -298,9 +303,9 @@ module pipeline_cpu_top (
                      branch_target;
 
     wire pipeline_empty = !if_id_valid && !id_ex_valid && !ex_mem_valid && !mem_wb_valid;
-    wire enter_interrupt_drain = irq_pending && !interrupt_drain_active && !redirect_exec && !global_stall;
-    assign take_interrupt_trap = interrupt_drain_active && pipeline_empty && !global_stall;
-    wire perf_flush = (!global_stall) && (redirect_exec || enter_interrupt_drain || take_interrupt_trap);
+    wire enter_interrupt_drain = irq_pending && !interrupt_drain_active && !redirect_exec && !pipeline_stall;
+    assign take_interrupt_trap = interrupt_drain_active && pipeline_empty && !pipeline_stall;
+    wire perf_flush = (!pipeline_stall) && (redirect_exec || enter_interrupt_drain || take_interrupt_trap);
 
     assign imem_req = rst_n && !interrupt_drain_active;
     assign imem_addr = pc;
@@ -316,7 +321,7 @@ module pipeline_cpu_top (
     pipeline_perf_counter u_perf (
         .clk(clk),
         .rst_n(rst_n),
-        .stall(global_stall),
+        .stall(perf_stall),
         .flush(perf_flush),
         .instret(mem_wb_valid && !mem_wb_fault),
         .cycle_count(debug_cycle),
@@ -395,6 +400,7 @@ module pipeline_cpu_top (
 
             interrupt_drain_active <= 1'b0;
             interrupt_resume_pc <= 32'b0;
+            discard_imem_resp <= 1'b0;
         end else if (take_interrupt_trap) begin
             pc <= csr_mtvec;
             if_id_valid <= 1'b0;
@@ -402,7 +408,8 @@ module pipeline_cpu_top (
             ex_mem_valid <= 1'b0;
             mem_wb_valid <= 1'b0;
             interrupt_drain_active <= 1'b0;
-        end else if (!global_stall) begin
+            discard_imem_resp <= 1'b0;
+        end else if (!pipeline_stall) begin
             interrupt_drain_active <= interrupt_drain_active || enter_interrupt_drain;
             if (enter_interrupt_drain) begin
                 interrupt_resume_pc <= pc;
@@ -413,6 +420,9 @@ module pipeline_cpu_top (
             if (enter_interrupt_drain) begin
                 pc <= pc;
                 if_id_valid <= 1'b0;
+                if (imem_wait) begin
+                    discard_imem_resp <= 1'b1;
+                end
 
                 id_ex_valid <= if_id_valid;
                 id_ex_pc <= if_id_pc;
@@ -444,17 +454,19 @@ module pipeline_cpu_top (
                 pc <= redirect_exec ? redirect_pc : pc;
                 if_id_valid <= 1'b0;
                 id_ex_valid <= 1'b0;
+                if (redirect_exec && imem_wait) begin
+                    discard_imem_resp <= 1'b1;
+                end
             end else if (redirect_exec) begin
                 pc <= redirect_pc;
                 if_id_valid <= 1'b0;
                 id_ex_valid <= 1'b0;
-            end else if (imem_ack) begin
-                pc <= pc + 32'd4;
-                if_id_valid <= 1'b1;
-                if_id_pc <= pc;
-                if_id_pc4 <= pc + 32'd4;
-                if_id_instr <= imem_data;
-
+                if (imem_wait) begin
+                    discard_imem_resp <= 1'b1;
+                end
+            end else begin
+                // Consume the already-fetched IF/ID instruction every cycle the
+                // back-end can run, even if the next instruction has not returned.
                 id_ex_valid <= if_id_valid;
                 id_ex_pc <= if_id_pc;
                 id_ex_pc4 <= if_id_pc4;
@@ -481,6 +493,21 @@ module pipeline_cpu_top (
                 id_ex_csr_use_imm <= dec_csr_use_imm;
                 id_ex_csr_addr <= if_id_csr_addr;
                 id_ex_mret <= dec_mret;
+
+                if (imem_ack) begin
+                    if (discard_imem_resp) begin
+                        if_id_valid <= 1'b0;
+                        discard_imem_resp <= 1'b0;
+                    end else begin
+                        pc <= pc + 32'd4;
+                        if_id_valid <= 1'b1;
+                        if_id_pc <= pc;
+                        if_id_pc4 <= pc + 32'd4;
+                        if_id_instr <= imem_data;
+                    end
+                end else begin
+                    if_id_valid <= 1'b0;
+                end
             end
 
             ex_mem_valid <= id_ex_valid;
@@ -515,7 +542,7 @@ module pipeline_cpu_top (
             mem_wb_csr_en <= ex_mem_csr_en;
             mem_wb_csr_op <= ex_mem_csr_op;
             mem_wb_csr_addr <= ex_mem_csr_addr;
-        end else if (load_use_stall && !imem_wait && !dmem_wait) begin
+        end else if (load_use_stall && !dmem_wait) begin
             id_ex_valid <= 1'b0;
             id_ex_reg_write <= 1'b0;
             id_ex_mem_read <= 1'b0;

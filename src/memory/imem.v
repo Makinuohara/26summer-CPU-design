@@ -2,7 +2,7 @@
 `include "memory_internal.vh"
 
 module imem #(
-    parameter ADDR_WIDTH = 12,
+    parameter ADDR_WIDTH = 14,
     parameter MEM_LATENCY = 1,
     parameter INIT_FILE = ""
 ) (

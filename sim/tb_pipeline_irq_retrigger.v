@@ -1,17 +1,9 @@
 `timescale 1ns / 1ps
 
-module fpga_top (
-    input wire CLK100MHZ,
-    input wire CPU_RESETN,
-    input wire [1:0] SW, 
-    output wire [15:0] LED,
-    output wire [6:0] SEG,
-    output wire [7:0] AN,
-    output wire DP
-);
-    wire rst = ~CPU_RESETN;
-    wire cpu_clk;
-    wire scan_clk;
+module tb_pipeline_irq_retrigger;
+    reg clk;
+    reg rst_n;
+    reg [15:0] sw;
 
     wire imem_req;
     wire [31:0] imem_addr;
@@ -60,37 +52,17 @@ module fpga_top (
     wire intc_irq;
     wire meip;
 
-    wire [31:0] debug_pc;
-    wire [31:0] debug_cycle;
-    wire [31:0] debug_instret;
-    wire [31:0] debug_stall;
-    wire [31:0] debug_flush;
-    wire [31:0] debug_x5;
-    wire [15:0] board_sw = {14'b0, SW};
-    wire [4:0] board_btn = 5'b0;
-    // irq_sources[0] is reserved by the interrupt controller.
-    // Source 1 is switches, source 2 is buttons.
-    wire [15:0] irq_sources = {13'b0, btn_irq, sw_irq, 1'b0};
-    
-    clk_div #(
-        .DIV_BITS(18)
-    ) u_cpu_clk_div (
-        .clk(CLK100MHZ),
-        .rst(rst),
-        .slow_clk(cpu_clk)
-    );
+    wire [15:0] led;
+    wire [6:0] seg;
+    wire [7:0] an;
+    wire dp;
+    wire [7:0] seg_debug_value;
 
-    clk_div #(
-        .DIV_BITS(15)
-    ) u_scan_clk_div (
-        .clk(CLK100MHZ),
-        .rst(rst),
-        .slow_clk(scan_clk)
-    );
+    integer i;
 
-    pipeline_cpu_top u_cpu (
-        .clk(cpu_clk),
-        .rst_n(~rst),
+    pipeline_cpu_top dut (
+        .clk(clk),
+        .rst_n(rst_n),
         .imem_req(imem_req),
         .imem_addr(imem_addr),
         .imem_ack(imem_ack),
@@ -106,17 +78,17 @@ module fpga_top (
         .meip(meip),
         .mtip(1'b0),
         .msip(1'b0),
-        .debug_pc(debug_pc),
-        .debug_cycle(debug_cycle),
-        .debug_instret(debug_instret),
-        .debug_stall(debug_stall),
-        .debug_flush(debug_flush),
-        .debug_x5(debug_x5)
+        .debug_pc(),
+        .debug_cycle(),
+        .debug_instret(),
+        .debug_stall(),
+        .debug_flush(),
+        .debug_x5()
     );
 
     fpga_demo_imem u_imem (
-        .clk(cpu_clk),
-        .rst_n(~rst),
+        .clk(clk),
+        .rst_n(rst_n),
         .imem_req(imem_req),
         .imem_addr(imem_addr),
         .imem_ack(imem_ack),
@@ -127,8 +99,8 @@ module fpga_top (
         .dmem_req(dmem_req),
         .dmem_addr(dmem_addr),
         .dmem_we(dmem_we),
-        .dmem_wdata(dmem_wdata), 
-        .dmem_width(dmem_width), 
+        .dmem_wdata(dmem_wdata),
+        .dmem_width(dmem_width),
         .dmem_ack(dmem_ack),
         .dmem_rdata(dmem_rdata),
         .dmem_fault(dmem_fault),
@@ -168,8 +140,8 @@ module fpga_top (
         .LINE_WORDS(4),
         .MEM_LATENCY(2)
     ) u_dmem (
-        .clk(cpu_clk),
-        .rst_n(~rst),
+        .clk(clk),
+        .rst_n(rst_n),
         .dmem_cs(mem_cs),
         .dmem_addr(dmem_addr),
         .dmem_we(dmem_we),
@@ -182,8 +154,8 @@ module fpga_top (
     );
 
     io_switches u_switches (
-        .clk(cpu_clk),
-        .rst_n(~rst),
+        .clk(clk),
+        .rst_n(rst_n),
         .dmem_cs(sw_cs),
         .dmem_addr(dmem_addr),
         .dmem_we(dmem_we),
@@ -193,12 +165,12 @@ module fpga_top (
         .dmem_rdata(sw_rdata),
         .dmem_fault(sw_fault),
         .dmem_irq(sw_irq),
-        .sw(board_sw)
+        .sw(sw)
     );
 
     io_leds u_leds (
-        .clk(cpu_clk),
-        .rst_n(~rst),
+        .clk(clk),
+        .rst_n(rst_n),
         .dmem_cs(led_cs),
         .dmem_addr(dmem_addr),
         .dmem_we(dmem_we),
@@ -208,13 +180,13 @@ module fpga_top (
         .dmem_rdata(led_rdata),
         .dmem_fault(led_fault),
         .dmem_irq(),
-        .led(LED)
+        .led(led)
     );
 
     io_seg7 u_seg7 (
-        .clk(cpu_clk),
-        .scan_clk(scan_clk),
-        .rst_n(~rst),
+        .clk(clk),
+        .scan_clk(clk),
+        .rst_n(rst_n),
         .dmem_cs(seg_cs),
         .dmem_addr(dmem_addr),
         .dmem_we(dmem_we),
@@ -224,15 +196,15 @@ module fpga_top (
         .dmem_rdata(seg_rdata),
         .dmem_fault(seg_fault),
         .dmem_irq(),
-        .seg(SEG),
-        .an(AN),
-        .dp(DP),
-        .debug_value()
+        .seg(seg),
+        .an(an),
+        .dp(dp),
+        .debug_value(seg_debug_value)
     );
 
     io_buttons u_buttons (
-        .clk(cpu_clk),
-        .rst_n(~rst),
+        .clk(clk),
+        .rst_n(rst_n),
         .dmem_cs(btn_cs),
         .dmem_addr(dmem_addr),
         .dmem_we(dmem_we),
@@ -242,12 +214,12 @@ module fpga_top (
         .dmem_rdata(btn_rdata),
         .dmem_fault(btn_fault),
         .dmem_irq(btn_irq),
-        .btn(board_btn)
+        .btn(5'b0)
     );
 
     interrupt_controller u_intc (
-        .clk(cpu_clk),
-        .rst_n(~rst),
+        .clk(clk),
+        .rst_n(rst_n),
         .dmem_cs(intc_cs),
         .dmem_addr(dmem_addr),
         .dmem_we(dmem_we),
@@ -257,9 +229,69 @@ module fpga_top (
         .dmem_rdata(intc_rdata),
         .dmem_fault(intc_fault),
         .dmem_irq(intc_irq),
-        .irq_sources(irq_sources), 
+        .irq_sources({13'b0, btn_irq, sw_irq, 1'b0}),
         .meip(meip)
     );
 
-    wire unused_debug = ^{ps2_cs, mem_irq, intc_irq, debug_pc[0], debug_cycle[0], debug_instret[0], debug_stall[0], debug_flush[0], debug_x5[0]};
+    task automatic wait_for_state;
+        input [15:0] expected_led;
+        input [7:0] expected_seg;
+        input [31:0] expected_mem0;
+        input [31:0] max_cycles;
+        begin
+            for (i = 0; i < max_cycles; i = i + 1) begin
+                @(posedge clk);
+                if (led == expected_led &&
+                    seg_debug_value == expected_seg &&
+                    u_dmem.u_backend.mem[0] == expected_mem0 &&
+                    u_intc.claimed == 16'b0 &&
+                    meip == 1'b0) begin
+                    disable wait_for_state;
+                end
+            end
+            $display("FAIL: timeout waiting state led=%h seg=%h mem0=%h meip=%b claimed=%h",
+                     expected_led, expected_seg, expected_mem0, meip, u_intc.claimed);
+            $display("      current led=%h seg=%h mem0=%h pc=%h",
+                     led, seg_debug_value, u_dmem.u_backend.mem[0], dut.pc);
+            $finish;
+        end
+    endtask
+
+    initial begin
+        clk = 1'b0;
+        forever #5 clk = ~clk;
+    end
+
+    initial begin
+        rst_n = 1'b0;
+        sw = 16'h0000;
+
+        repeat (8) @(posedge clk);
+        rst_n = 1'b1;
+
+        wait_for_state(16'h0000, 8'h03, 32'h0000_0001, 1200);
+
+        sw = 16'h0001;
+        wait_for_state(16'h0011, 8'h13, 32'h0000_0011, 1200);
+
+        sw = 16'h0002;
+        wait_for_state(16'h0012, 8'h14, 32'h0000_0012, 1200);
+
+        sw = 16'h0004;
+        wait_for_state(16'h0014, 8'h16, 32'h0000_0014, 1200);
+
+        if (u_dmem.u_backend.mem[1] !== 32'h0000_0002) begin
+            $display("FAIL: mem1 expected 2, got %h", u_dmem.u_backend.mem[1]);
+            $finish;
+        end
+
+        if (u_dmem.u_backend.mem[2] !== 32'h0000_0016) begin
+            $display("FAIL: mem2 expected 0x16, got %h", u_dmem.u_backend.mem[2]);
+            $finish;
+        end
+
+        $display("PASS: repeated switch interrupts passed led=%h seg=%h mem0=%h mem2=%h",
+                 led, seg_debug_value, u_dmem.u_backend.mem[0], u_dmem.u_backend.mem[2]);
+        $finish;
+    end
 endmodule

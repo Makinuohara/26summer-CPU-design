@@ -229,6 +229,41 @@ imem_addr=pc
 
 当 `imem_ack=1` 时，`imem_data` 被采样进入 IF/ID 寄存器。
 
+#### 6.1.1 本轮修正的取指控制线路
+
+为解决板级联调中出现的“回跳后取错指令、`lw` 结果不再更新”的问题，CPU 取指控制增加了两条约束：
+
+1. `imem_wait` 只阻塞前端取指，不再阻塞 EX/MEM/WB 老指令的继续前推。
+2. 当 EX 阶段产生分支、`jal/jalr` 或 `mret/trap` 重定向时，若旧 PC 的取指请求仍在飞行，则该响应在返回时必须丢弃，不能再写入 IF/ID。
+
+对应到当前实现：
+
+```text
+pipeline_stall = dmem_wait || load_use_stall
+perf_stall     = imem_wait || pipeline_stall
+```
+
+这意味着：
+
+1. 数据访存等待、load-use 仍然冻结后端流水线。
+2. 单纯取指等待只会让 IF/ID 暂时没有新指令，不会把已经进入 EX/MEM/WB 的指令错误重放。
+3. 控制流重定向时，CPU 通过 `discard_imem_resp` 丢弃悬空的旧取指响应，保证回跳后重新从新 PC 发起取指。
+
+新增线路可概括为：
+
+```text
+redirect_exec / enter_interrupt_drain
+            |
+            +--> 更新 pc = redirect_pc
+            |
+            +--> 若旧取指未返回，则置位 discard_imem_resp
+                                 |
+                                 +--> 下一次 imem_ack 到来时丢弃该响应
+                                 +--> 保留 redirect_pc，重新取正确目标指令
+```
+
+这条修正主要影响 IF 控制与控制冒险处理，不改变寄存器堆、ALU、访存宽度和 CSR 指令语义。
+
 ### 6.2 数据总线
 
 MEM 阶段遇到 load/store 时发起数据访问：
