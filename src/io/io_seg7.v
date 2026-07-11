@@ -20,10 +20,10 @@ module io_seg7 (
     reg [7:0] hex_value;
     reg [7:0] raw_digits [0:7];
     reg [15:0] scan_counter;
-    // scan_clk is already divided down at the top level, so use the low bits here.
-    // Using scan_counter[15:13] makes digit switching so slow on board that it
-    // looks like the display is stuck on a single digit for seconds.
-    wire [2:0] scan_index = scan_counter[2:0];
+    // scan_clk is driven by the board 100 MHz clock in the current SoC top.
+    // Use upper bits so the multiplex frequency lands in the visible, stable
+    // range on the physical 7-seg display instead of effectively free-running.
+    wire [2:0] scan_index = scan_counter[15:13];
     wire valid_access = dmem_width == 2'b00 && dmem_addr[1:0] == 2'b00;
     wire [3:0] reg_index = dmem_addr[5:2] - 4'd4;
     integer i;

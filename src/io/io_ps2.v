@@ -33,10 +33,12 @@ module io_ps2 (
     reg        rx_ready_fast;
     reg        f0_flag;
     reg        e0_flag;
+    reg        rx_ack_toggle;
     reg        rx_ack_toggle_fast;
     reg        rx_ack_toggle_sync0;
     reg        rx_ack_toggle_sync1;
     reg        rx_ack_toggle_prev;
+    wire is_service_byte = (shift_reg[8:1] == 8'hAA) || (shift_reg[8:1] == 8'hFA);
 
     always @(posedge clk_fast or negedge rst_n) begin
         if (!rst_n) begin
@@ -114,6 +116,8 @@ module io_ps2 (
                                 f0_flag <= 1'b1;
                             end else if (shift_reg[8:1] == 8'hE0) begin
                                 e0_flag <= 1'b1;
+                            end else if (is_service_byte) begin
+                                e0_flag <= 1'b0;
                             end else if (f0_flag) begin
                                 f0_flag <= 1'b0;
                                 e0_flag <= 1'b0;
@@ -162,8 +166,9 @@ module io_ps2 (
     reg        ctrl_irq_en;
     reg [7:0]  rdata_byte;
     reg        rdata_valid;
+    reg [7:0]  shadow_byte;
+    reg        shadow_valid;
     reg [31:0] ps2_ctrl;
-    reg        rx_ack_toggle;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -171,6 +176,8 @@ module io_ps2 (
             ctrl_irq_en    <= 1'b0;
             rdata_byte     <= 8'd0;
             rdata_valid    <= 1'b0;
+            shadow_byte    <= 8'd0;
+            shadow_valid   <= 1'b0;
             rx_ready_consumed <= 1'b0;
             ps2_ctrl       <= 32'd0;
             rx_ack_toggle  <= 1'b0;
@@ -178,19 +185,34 @@ module io_ps2 (
             if (!rx_ready_sync1)
                 rx_ready_consumed <= 1'b0;
 
-            // Consume each received byte once. Bytes that arrive before
-            // software enables PS/2 are discarded so the receiver cannot stall.
-            // New key data wins over a simultaneous PS2_RDATA poll; otherwise
-            // a tight polling loop can clear valid in the same cycle it is set.
-            if (rx_ready_sync1 && !rx_ready_consumed && !rdata_valid) begin
+            // Consume each received byte once. If software has not read the
+            // current byte yet, queue one more byte in shadow storage so short
+            // key taps are not lost while the CPU is still servicing the
+            // previous interrupt.
+            if (rx_ready_sync1 && !rx_ready_consumed) begin
                 if (ctrl_enable) begin
-                    rdata_byte     <= rx_byte_sync1;
-                    rdata_valid    <= 1'b1;
+                    if (!rdata_valid) begin
+                        rdata_byte  <= rx_byte_sync1;
+                        rdata_valid <= 1'b1;
+                    end else if (!shadow_valid) begin
+                        shadow_byte  <= rx_byte_sync1;
+                        shadow_valid <= 1'b1;
+                    end else begin
+                        shadow_byte <= rx_byte_sync1;
+                    end
                 end
                 rx_ready_consumed <= 1'b1;
-                rx_ack_toggle  <= ~rx_ack_toggle;  // toggle to ack fast domain
-            end else if (dmem_cs && !dmem_we && dmem_addr[2] == 1'b1) begin
-                rdata_valid <= 1'b0;
+                rx_ack_toggle <= ~rx_ack_toggle;  // toggle to ack fast domain
+            end
+
+            if (dmem_cs && !dmem_we && dmem_addr[2] == 1'b1) begin
+                if (shadow_valid) begin
+                    rdata_byte   <= shadow_byte;
+                    rdata_valid  <= 1'b1;
+                    shadow_valid <= 1'b0;
+                end else begin
+                    rdata_valid <= 1'b0;
+                end
             end
 
             // Write PS2_CTRL register
@@ -198,6 +220,10 @@ module io_ps2 (
                 ctrl_enable <= dmem_wdata[0];
                 ctrl_irq_en <= dmem_wdata[8];
                 ps2_ctrl    <= {23'd0, dmem_wdata[8], 7'd0, dmem_wdata[0]};
+                if (!dmem_wdata[0]) begin
+                    rdata_valid  <= 1'b0;
+                    shadow_valid <= 1'b0;
+                end
             end
         end
     end
