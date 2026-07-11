@@ -19,7 +19,7 @@ module io_leds (
         if (!rst_n) begin
             led_reg <= 16'b0;
         end else if (dmem_cs && dmem_we && valid_access) begin
-            led_reg <= {8'b0, dmem_wdata[7:0]};
+            led_reg <= dmem_wdata[15:0];
         end
     end
 

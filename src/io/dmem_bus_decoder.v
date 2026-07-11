@@ -1,9 +1,9 @@
 module dmem_bus_decoder (
     input wire dmem_req,
     input wire [31:0] dmem_addr,
-    input wire dmem_we,
-    input wire [31:0] dmem_wdata,
-    input wire [1:0] dmem_width,
+    // input wire dmem_we,
+    // input wire [31:0] dmem_wdata,
+    // input wire [1:0] dmem_width,
     output wire dmem_ack,
     output wire [31:0] dmem_rdata,
     output wire dmem_fault,
@@ -87,5 +87,5 @@ module dmem_bus_decoder (
                         (intc_cs && intc_fault) ||
                         (dmem_req && miss);
 
-    wire unused_inputs = dmem_we ^ dmem_wdata[0] ^ dmem_width[0];
+    // wire unused_inputs = dmem_we ^ dmem_wdata[0] ^ dmem_width[0];
 endmodule

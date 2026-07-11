@@ -1,0 +1,523 @@
+# RISC-V RV32I 流水线 CPU — ABI / 汇编编程手册
+
+> 基于 `src/` 源码生成，所有地址、位域、行为均来自实际 RTL 实现。
+
+---
+
+## 一、CPU 概览
+
+| 项目 | 说明 |
+|------|------|
+| ISA | RV32I 整数指令集（无 CSR 非法指令异常，不支持的 CSR 静默忽略） |
+| 流水线 | 5 级：IF → ID → EX → MEM → WB |
+| 主频 (`cpu_clk`) | ~381 Hz（100 MHz 经 clk_div 18 位分频） |
+| 复位 | `CPU_RESETN` 低有效，复位后 `pc = 0x0000_0000`，所有 CSR = 0 |
+| 中断 | 仅 MEI（机器外部中断），无定时器/软件中断 |
+| 数据访存 | 仅支持 `lw`/`sw`（字对齐 32 位），不支持半字/字节访存 |
+
+---
+
+## 二、寄存器约定
+
+### 2.1 通用寄存器
+
+| 寄存器 | ABI 名 | 说明 |
+|--------|--------|------|
+| x0 | zero | 硬连线 0，写入被忽略 |
+| x1 | ra | 返回地址 |
+| x2 | sp | 栈指针（本 CPU 无栈限制，自由使用） |
+| x3-x4 | gp, tp | 通用 |
+| x5-x7 | t0-t2 | 临时寄存器（调用者保存） |
+| x8-x9 | s0-s1 | 保存寄存器（被调用者保存） |
+| x10-x17 | a0-a7 | 函数参数 / 返回值 |
+| x18-x27 | s2-s11 | 保存寄存器 |
+| x28-x31 | t3-t6 | 临时寄存器 |
+
+> **注意**：本 CPU 的 ISR 不会自动保存/恢复寄存器。**中断处理程序中必须手动保存和恢复所有要使用的寄存器。** 没有栈帧，需要用 `sw`/`lw` 手动将寄存器保存到数据内存中。
+
+### 2.2 特殊寄存器行为
+
+- **x0**：读始终返回 0，写被忽略（`reg_write && rd != 0`）
+- **寄存器文件有内部直通**：同一周期内 WB 阶段写入的值，ID 阶段可立即读到
+- 转发单元提供 EX/MEM 和 MEM/WB 到 EX 阶段的转发
+
+---
+
+## 三、支持指令集
+
+### 3.1 R-type（opcode = 0x33）
+
+| 指令 | funct7 | funct3 | 操作 |
+|------|--------|--------|------|
+| ADD | 0x00 | 0x0 | rd = rs1 + rs2 |
+| SUB | 0x20 | 0x0 | rd = rs1 - rs2 |
+| SLL | 0x00 | 0x1 | rd = rs1 << rs2[4:0] |
+| SLT | 0x00 | 0x2 | rd = (signed(rs1) < signed(rs2)) |
+| SLTU | 0x00 | 0x3 | rd = (rs1 < rs2) |
+| XOR | 0x00 | 0x4 | rd = rs1 ^ rs2 |
+| SRL | 0x00 | 0x5 | rd = rs1 >> rs2[4:0] |
+| SRA | 0x20 | 0x5 | rd = signed(rs1) >>> rs2[4:0] |
+| OR | 0x00 | 0x6 | rd = rs1 \| rs2 |
+| AND | 0x00 | 0x7 | rd = rs1 & rs2 |
+
+### 3.2 I-type ALU（opcode = 0x13）
+
+| 指令 | funct3 | 操作 |
+|------|--------|------|
+| ADDI | 0x0 | rd = rs1 + sext(imm[11:0]) |
+| SLLI | 0x1 | rd = rs1 << imm[4:0] |
+| SLTI | 0x2 | rd = (signed(rs1) < sext(imm[11:0])) |
+| SLTIU | 0x3 | rd = (rs1 < sext(imm[11:0])) |
+| XORI | 0x4 | rd = rs1 ^ sext(imm[11:0]) |
+| SRLI | 0x5 | rd = rs1 >> imm[4:0] (funct7[5]=0) |
+| SRAI | 0x5 | rd = signed(rs1) >>> imm[4:0] (funct7[5]=1) |
+| ORI | 0x6 | rd = rs1 \| sext(imm[11:0]) |
+| ANDI | 0x7 | rd = rs1 & sext(imm[11:0]) |
+
+### 3.3 Load / Store（仅字操作）
+
+| 指令 | opcode | 说明 |
+|------|--------|------|
+| LW | 0x03 | rd = mem[rs1 + sext(offset)]（32 位） |
+| SW | 0x23 | mem[rs1 + sext(offset)] = rs2（32 位） |
+
+> **不支持 LB/LH/LBU/LHU/SB/SH。** 地址必须 4 字节对齐。
+
+### 3.4 分支指令（opcode = 0x63）
+
+| 指令 | funct3 | 条件 |
+|------|--------|------|
+| BEQ | 0x0 | rs1 == rs2 |
+| BNE | 0x1 | rs1 != rs2 |
+| BLT | 0x4 | signed(rs1) < signed(rs2) |
+| BGE | 0x5 | signed(rs1) >= signed(rs2) |
+| BLTU | 0x6 | rs1 < rs2 |
+| BGEU | 0x7 | rs1 >= rs2 |
+
+### 3.5 跳转指令
+
+| 指令 | opcode | 说明 |
+|------|--------|------|
+| JAL | 0x6F | rd = pc+4, pc = pc + sext(offset) |
+| JALR | 0x67 | rd = pc+4, pc = (rs1 + sext(offset)) & ~1（半字对齐） |
+
+### 3.6 立即数指令
+
+| 指令 | opcode | 说明 |
+|------|--------|------|
+| LUI | 0x37 | rd = (imm[31:12] << 12) |
+| AUIPC | 0x17 | rd = pc + (imm[31:12] << 12) |
+
+### 3.7 系统指令（opcode = 0x73）
+
+| 指令 | 检测方式 | 说明 |
+|------|---------|------|
+| MRET | `instr == 0x30200073` | 精确匹配 |
+| CSRRW | funct3 = 0x1 | CSR 写（rd = CSR, CSR = rs1） |
+| CSRRS | funct3 = 0x2 | CSR 置位（rd = CSR, CSR = CSR \| rs1） |
+| CSRRC | funct3 = 0x3 | CSR 清零（rd = CSR, CSR = CSR & ~rs1） |
+| CSRRWI | funct3 = 0x5 | CSR 立即数写（rd = CSR, CSR = zimm） |
+| CSRRSI | funct3 = 0x6 | CSR 立即数置位 |
+| CSRRCI | funct3 = 0x7 | CSR 立即数清零 |
+
+> **CSR 指令实现说明**：`funct3` 的低 2 位直接映射到 `csr_op`（01=WRITE, 10=SET, 11=CLEAR），高位 `funct3[2]` 选择立即数来源。`funct3=0x0` 的 ECALL/EBREAK 静默按 NOP 处理。所有 CSR 指令均完成（不报非法指令异常）。
+
+---
+
+## 四、CSR 寄存器
+
+| CSR | 地址 | 读写 | 复位值 | 说明 |
+|-----|------|------|--------|------|
+| mstatus | 0x300 | RW | 0x00000000 | [3]=MIE, [7]=MPIE |
+| mie | 0x304 | RW | 0x00000000 | [3]=MSIE, [7]=MTIE, [11]=MEIE |
+| mtvec | 0x305 | RW | 0x00000000 | 写入强制字对齐 `& 0xFFFF_FFFC`，仅 DIRECT 模式 |
+| mepc | 0x341 | RW | 0x00000000 | 写入强制半字对齐 `& 0xFFFF_FFFE` |
+| mcause | 0x342 | RW | 0x00000000 | 无写掩码，可写任意值 |
+| mip | 0x344 | RO | 组合逻辑 | [3]=msip, [7]=mtip, [11]=meip |
+
+### 4.1 CSR 操作码
+
+| csr_op | 名称 | 行为 |
+|--------|------|------|
+| 01 | WRITE | CSR = wdata |
+| 10 | SET | CSR = CSR \| wdata |
+| 11 | CLEAR | CSR = CSR & ~wdata |
+
+### 4.2 中断控制流程
+
+**进入中断（trap_take = 1）：**
+1. `mepc = trap_pc & 0xFFFF_FFFE`（保存返回地址，半字对齐）
+2. `mcause = trap_cause`（即 `irq_cause`）
+3. `mstatus[7] (MPIE) = mstatus[3] (MIE)`（保存旧 MIE）
+4. `mstatus[3] (MIE) = 0`（关全局中断）
+5. `pc = mtvec`（跳转到中断向量）
+
+**退出中断（MRET）：**
+1. `mstatus[3] (MIE) = mstatus[7] (MPIE)`（恢复 MIE）
+2. `mstatus[7] (MPIE) = 1`
+3. `pc = mepc`（返回）
+
+### 4.3 中断原因码
+
+| 中断源 | mcause 值 | 说明 |
+|--------|-----------|------|
+| MEI（外部中断） | `0x8000_000B` | cause=11, bit31=1（中断标识） |
+| 无中断 | `0x0000_0000` | |
+
+> **msip 和 mtip 硬连线为 0**。所有 I/O 中断（PS/2、按键、开关）都通过 PLIC 以 MEI 形式上报。
+
+### 4.4 中断仲裁优先级
+
+```
+MEI (cause 11) > MTI (cause 7) > MSI (cause 3)
+```
+
+---
+
+## 五、中断流水线排水机制
+
+该 CPU 采用**"排水后进中断"**策略：
+
+```
+1. enter_interrupt_drain:
+   条件: irq_pending && !interrupt_drain_active && !redirect_exec && !pipeline_stall
+   动作:
+     - interrupt_drain_active = 1
+     - interrupt_resume_pc = pc（保存恢复 PC）
+     - pc 冻结，不再取指
+     - if_id_valid = 0（丢弃当前 IF/ID）
+     - imem_req = 0（停止取指）
+     - 对在途的取指响应标记 discard_imem_resp
+
+2. 排水阶段:
+   - pc 冻结
+   - 流水线中已有的指令正常执行完毕（EX → MEM → WB）
+   - 若排水期间分支/跳转解析，interrupt_resume_pc 更新为跳转目标
+
+3. take_interrupt_trap:
+   条件: interrupt_drain_active && pipeline_empty && !pipeline_stall
+   动作:
+     - pc = mtvec（跳转中断处理程序）
+     - 所有流水段 valid = 0（刷新）
+     - interrupt_drain_active = 0
+     - CSR 单元锁存 trap_take（mepc/mcause/mstatus 更新）
+```
+
+**对编程的影响：**
+- 中断不会立即切断正在执行的指令，当前流水线全部执行完毕后才会跳转
+- 返回地址 `mepc` 指向排水完成后下一条应执行的指令
+- 排水期间发生跳转，mepc 指向跳转目标
+
+---
+
+## 六、内存映射
+
+### 6.1 地址空间总览
+
+```
+0x0000_0000 ─────────────────────────────
+             │  指令内存 (IMEM)           │
+             │  默认 16 KB               │
+0x0000_0FFF ─────────────────────────────  (ADDR_WIDTH=12)
+             │  ... (可扩展至 0x07FF_FFFF) │
+0x07FF_FFFF ─────────────────────────────
+             │  数据内存 (DMEM)           │  含 L1 Cache
+0x0800_0000 ── 以上为 MMIO ─────────────
+0x7FFF_FFFF ─────────────────────────────
+0x8000_0000 │  PS/2 控制器               │
+0x8000_0008 │  开关 (Switches)           │
+0x8000_000C │  LED                       │
+0x8000_0010 │  7 段数码管                 │
+0x8000_0030 │  按键 (Buttons)            │
+0x8100_0000 │  中断控制器 (PLIC)          │
+0x8120_0008 ─────────────────────────────
+```
+
+### 6.2 指令内存 (IMEM)
+
+| 属性 | 值 |
+|------|-----|
+| 起始地址 | `0x0000_0000` |
+| 容量（默认） | 16 KB（4096 字 × 32 位） |
+| 延迟 | 1 周期 |
+| 初始化 | `$readmemh(INIT_FILE)`，hex 格式，每行一个 32 位指令字 |
+| 越界/未对齐 | 返回 `0x00000013`（NOP: ADDI x0,x0,0） |
+
+**Hex 文件格式：**
+```
+@0
+000000B7         ← mem[0] = 0x000000B7（字节地址 0x0）
+20008093         ← mem[1] = 0x20008093（字节地址 0x4）
+...
+@80
+800002B7         ← mem[0x80] = 0x800002B7（字节地址 0x200）
+```
+
+> 指令字索引 N 对应字节地址 N×4。`@80` 表示字节地址 0x200。
+
+### 6.3 数据内存 + Cache (DMEM)
+
+| 属性 | 值 |
+|------|-----|
+| 物理容量 | 16 KB（4096 字，PHYS_ADDR_WIDTH=12） |
+| Cache 容量 | 256 字节（16 行 × 4 字/行） |
+| Cache 映射 | 直接映射 |
+| 写策略 | **写直达（write-through）** |
+| 写分配 | **写不分配（write-no-allocate）** |
+| 访存延迟 | 1 周期（命中时） |
+
+> 地址超出物理范围（bit[31:14] 非 0）会触发**总线错误**（`dmem_fault = 1`）。仅支持字对齐的字访问。
+
+---
+
+## 七、I/O 设备寄存器
+
+### 7.1 PS/2 键盘控制器
+
+**基地址：`0x8000_0000`**
+
+| 偏移 | 寄存器 | 读写 | 位域 | 说明 |
+|------|--------|------|------|------|
+| 0x00 | PS2_CTRL | RW | [0]=enable, [8]=irq_en | 控制寄存器 |
+| 0x04 | PS2_RDATA | RO | [7:0]=scan_code, [8]=valid | 数据寄存器，读后自动清 valid |
+
+**行为说明：**
+- 复位后 `enable=0, irq_en=0`，不接收数据
+- 必须写入 `0x101`（enable=1, irq_en=1）才能启用以中断方式工作
+- `enable=0` 时收到的字节被丢弃
+- 读 `PS2_RDATA` 自动清除 `valid` 位
+- 写 `PS2_RDATA`（偏移 0x04）触发总线错误
+- 非字写入（`dmem_width != 0`）触发总线错误
+- `dmem_irq = rdata_valid && ctrl_irq_en`
+- PS/2 接收器中 F0（释放）和 E0（扩展键）前缀被硬件消费，**不暴露给软件**
+- 仅暴露每个 make/break 序列的最终字节
+
+### 7.2 LED
+
+**地址：`0x8000_000C`**
+
+| 位域 | 读写 | 说明 |
+|------|------|------|
+| [15:0] | RW | LED 输出，1 亮 0 灭 |
+| [31:16] | — | 保留（写入被忽略，读出为 0） |
+
+| LED 名称 | 位 | 说明 |
+|----------|-----|------|
+| LED0 | bit 0 | 最右侧 |
+| LED1 | bit 1 | |
+| ... | ... | |
+| LED15 | bit 15 | 最左侧 |
+
+> 非字访问触发总线错误。读回当前 LED 寄存器的值。复位后全灭。
+
+### 7.3 开关 (Switches)
+
+**地址：`0x8000_0008`**
+
+| 位域 | 读写 | 说明 |
+|------|------|------|
+| [15:0] | RO | 开关值，1=上拨 |
+| [31:16] | — | 始终为 0 |
+
+> 写操作触发总线错误。含 2 级同步器去抖。开关变化产生边沿中断。
+
+### 7.4 按键 (Buttons)
+
+**地址：`0x8000_0030`**
+
+| 位域 | 读写 | 说明 |
+|------|------|------|
+| [4:0] | RO | 按键值，1=按下 |
+| [31:5] | — | 始终为 0 |
+
+> **FPGA 顶层中按键未连接：`btn = 5'b0`。** 物理按键不可用。写操作触发总线错误。
+
+### 7.5 7 段数码管
+
+**基地址：`0x8000_0010`**
+
+| 偏移 | 寄存器 | 读写 | 位域 | 说明 |
+|------|--------|------|------|------|
+| 0x00 | CTRL | RW | [7:0]=hex_value | 调试输出（debug_seg_value） |
+| 0x04 | DIGIT0 | RW | [3:0]=数字值 | 最右位 AN[0] |
+| 0x08 | DIGIT1 | RW | [3:0]=数字值 | AN[1] |
+| 0x0C | DIGIT2 | RW | [3:0]=数字值 | AN[2] |
+| 0x10 | DIGIT3 | RW | [3:0]=数字值 | AN[3] |
+| 0x14 | DIGIT4 | RW | [3:0]=数字值 | AN[4] |
+| 0x18 | DIGIT5 | RW | [3:0]=数字值 | AN[5] |
+| 0x1C | DIGIT6 | RW | [3:0]=数字值 | AN[6] |
+| 0x20 | DIGIT7 | RW | [3:0]=数字值 | AN[7]（最左位） |
+
+> 每个 DIGIT 寄存器写低 4 位（0-15），硬件自动译码为 7 段码。复位后所有位为 0xFF（全灭? 实际复位 raw_digits=0xFF，段译码后表现为全灭）。dp 硬连线为 1（小数点常灭）。
+
+---
+
+## 八、中断控制器 (PLIC)
+
+**基地址：`0x8100_0000`**
+
+### 8.1 寄存器映射
+
+| 偏移 | 名称 | 读写 | 位宽 | 说明 |
+|------|------|------|------|------|
+| 0x000004 — 0x00003C | PRIORITY[1..15] | RW | [2:0] | 每源 3 位优先级，ID=偏移[5:2] |
+| 0x001000 | PENDING | RO | [15:0] | 中断挂起位，读自 `irq_sources & ~claimed`，**写触发 bus fault** |
+| 0x002000 | ENABLE | RW | [15:0] | 中断使能位，写入自动屏蔽 bit 0 |
+| 0x200000 | THRESHOLD | RW | [2:0] | 优先级阈值（大于此值的中断才会响应） |
+| 0x200004 | CLAIM/COMPLETE | RW | [3:0] | 读=Claim（返回源 ID 并原子 set claimed），写=Complete（清除 claimed） |
+
+### 8.2 PLIC 中断源映射（soc.v）
+
+| PLIC 源 ID | 设备 | 信号 |
+|------------|------|------|
+| **2** | **PS/2 键盘** | `ps2_irq` |
+| **8** | 按键 | `btn_irq`（FPGA 中实际未连接） |
+| **10** | 开关 | `sw_irq` |
+| 1,3-7,9,11-15 | 未使用 | 0 |
+
+### 8.3 PLIC 操作流程
+
+**初始化：**
+```
+1. 设置 PRIORITY[ID] = 1 ~ 7（大于 threshold）
+2. 设置 ENABLE |= (1 << ID)
+3. 设置 THRESHOLD = 0（或小于优先级的值）
+```
+
+**中断处理（ISR 中）：**
+```
+1. 读 CLAIM (0x81200004) → 获取最高优先级的中断源 ID
+    若返回 0 → 伪中断，直接返回
+2. 处理对应设备中断
+    - PS/2: 读 PS2_RDATA (0x80000004) 清除中断源
+    - 开关: 读 Switches (0x80000008) 清除中断源
+3. 写 CLAIM (0x81200004) = 源 ID → 完成中断
+4. MRET 返回
+```
+
+### 8.4 PLIC 仲裁规则
+
+- 扫描 ID 1→15，优先级**严格大于** threshold 且**严格大于**当前 best_priority
+- 同优先级时，**低 ID 获胜**（先扫描先胜出）
+- 读 CLAIM 后同一次总线事务内再读返回相同 ID（`claim_hold_valid` 机制）
+- 未 complete 的中断不会再次触发（`pending = irq_sources & ~claimed`）
+
+---
+
+## 九、中断编程模板
+
+### 9.1 PS/2 中断示例（带寄存器保存）
+
+```asm
+# ===== 主程序 =====
+    # 设置中断向量表
+    lui  x1, 0
+    addi x1, x1, 0x200
+    csrrw x0, mtvec, x1          # mtvec = 0x200
+
+    # 配置 PLIC
+    lui  x5, 0x81000             # PLIC 基地址
+    addi x6, x0, 1
+    sw   x6, 8(x5)               # PRIORITY[2] = 1 (PS/2)
+    addi x6, x0, 4
+    lui  x5, 0x81002             # ENABLE 寄存器地址
+    sw   x6, 0(x5)               # ENABLE = 0x4 (使能源 2)
+    lui  x5, 0x81200             # THRESHOLD/CLAIM 地址
+    sw   x0, 0(x5)               # THRESHOLD = 0
+
+    # 使能机器外部中断
+    lui  x6, 0x1
+    addi x6, x6, 0x800           # MEIE bit = 0x800
+    csrrs x0, mie, x6            # mie |= 0x800
+    addi x6, x0, 8               # MIE bit = 8
+    csrrs x0, mstatus, x6        # mstatus |= 8 (开全局中断)
+
+    # 使能 PS/2 控制器
+    lui  x5, 0x80000             # IO 基地址
+    addi x6, x0, 0x101           # enable=1, irq_en=1
+    sw   x6, 0(x5)               # PS2_CTRL = 0x101
+
+loop:
+    addi x0, x0, 0               # NOP
+    jal  x0, loop                # 死循环等待中断
+
+
+# ===== 中断处理程序 (@0x200) =====
+handler:
+    # 保存寄存器到数据内存
+    lui  x31, 0x1                # 使用内存高地址区作栈
+    addi x31, x31, -16
+    sw   x5, 0(x31)
+    sw   x6, 4(x31)
+    sw   x7, 8(x31)
+    sw   x10, 12(x31)
+
+    lui  x5, 0x80000             # IO 基地址
+    lui  x6, 0x81200             # CLAIM 地址
+
+    lw   x10, 4(x6)              # x10 = claim_id
+    lw   x7, 4(x5)               # 读 PS2_RDATA（清除中断源）
+    lw   x7, 12(x5)              # 读当前 LED
+    xori x7, x7, 2               # 翻转 bit 1 (LED1)
+    sw   x7, 12(x5)              # 写回 LED
+    sw   x10, 4(x6)              # complete 中断
+
+    # 恢复寄存器
+    lw   x5, 0(x31)
+    lw   x6, 4(x31)
+    lw   x7, 8(x31)
+    lw   x10, 12(x31)
+
+    mret                          # 返回
+```
+
+### 9.2 伪指令对照
+
+由于是裸 hex 编码，无条件跳转常用：
+
+| 目的 | 指令 | 编码 |
+|------|------|------|
+| 死循环 | `addi x0,x0,0; jal x0, -4` | `0x00000013; 0xFFDFF06F` |
+| 跳转到 label | `jal x0, offset` | 常规 jal 编码 |
+
+---
+
+## 十、实现限制与注意事项
+
+| # | 限制 | 影响 |
+|---|------|------|
+| 1 | **仅支持 lw/sw** | 不能用 lb/lh/lbu/lhu/sb/sh |
+| 2 | **无定时器中断** | mtip 硬连线为 0 |
+| 3 | **无软件中断** | msip 硬连线为 0 |
+| 4 | **按键未连接** | btn 硬连线为 0，物理按钮不可用 |
+| 5 | **mtvec 仅 DIRECT 模式** | 写入强制字对齐，不支持向量中断模式 |
+| 6 | **ISR 不自保存** | 中断处理程序必须手动保存/恢复所有使用到的寄存器 |
+| 7 | **PS/2 F0/E0 被吞** | 看不到完整的 make/break 序列，只收最终字节 |
+| 8 | **数据内存有 Cache** | 写直达 + 写不分配，写操作必然触发内存写入 |
+| 9 | **Load-use 停顿** | lw 后紧跟使用该结果会产生 1 周期气泡 |
+| 10 | **CPU 时钟极慢** | ~381 Hz，约 381 指令/秒，适于人速 IO 不适计算 |
+| 11 | **中断排水更新 mepc** | 排水期间若分支跳转，mepc 指向跳转目标 |
+| 12 | **PLIC 源 0 不可用** | enable bit 0 强制为 0，priority[0] 不可写 |
+| 13 | **PENDING 寄存器只读** | 写触发总线错误 |
+
+---
+
+## 附录：常用地址速查
+
+| 资源 | 地址 | 关键操作 |
+|------|------|---------|
+| PC 起始 | `0x0000_0000` | 复位入口 |
+| 中断向量 | 任意（如 `0x0000_0200`） | 写入 mtvec |
+| LED | `0x8000_000C` | lw/sw 读写低 16 位 |
+| PS/2 控制 | `0x8000_0000` | sw `0x101` 使能 |
+| PS/2 数据 | `0x8000_0004` | lw 读扫描码（自动清除 valid） |
+| 开关 | `0x8000_0008` | lw 读低 16 位 |
+| PLIC Priority[N] | `0x8100_0000 + N*4` | sw 低 3 位（N=1..15） |
+| PLIC Enable | `0x8100_2000` | sw 低 16 位 |
+| PLIC Threshold | `0x8120_0000` | sw 低 3 位 |
+| PLIC Claim/Complete | `0x8120_0004` | lw=claim, sw=complete |
+| mstatus | CSR 0x300 | MIE=bit3, MPIE=bit7 |
+| mie | CSR 0x304 | MEIE=bit11 |
+| mtvec | CSR 0x305 | 写入地址 |
+| mepc | CSR 0x341 | 中断返回地址 |
+| mcause | CSR 0x342 | MEI=0x8000000B |
