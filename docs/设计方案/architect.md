@@ -267,8 +267,8 @@ CPU 通过数据总线译码器访问数据存储器及全部内存映射 IO 设
 
 **译码器工作流程**：
 
-1. 接收 CPU 的 `dmem_req`、`dmem_addr`、`dmem_we`、`dmem_wdata`、`dmem_width`。
-2. 根据 `dmem_addr` 高位译码，置位对应设备的 `dmem_cs`，向所有设备转发 `dmem_addr`、`dmem_we`、`dmem_wdata`、`dmem_width`。
+1. 接收 CPU 的 `dmem_req`、`dmem_addr`。
+2. 根据 `dmem_addr` 高位译码，置位对应设备的 `dmem_cs`。
 3. 等待被选中设备的 `dmem_ack` 响应。
 4. 将被选中设备的 `dmem_ack`、`dmem_rdata`、`dmem_fault` 转发给 CPU 的数据总线。
 
