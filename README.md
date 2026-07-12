@@ -1,25 +1,25 @@
 # RV32I 流水线 SoC — Nexys 4 DDR
 
 五级流水线 RV32I CPU，集成 PLIC 中断控制器、PS/2 键盘、7 段数码管等外设。
-当前演示程序：PS/2 键盘输入数字 → 数码管滑动显示。
+
 
 ## 快速开始（汇编 → 下载 → 运行）
 
-### 0. 编写汇编
+当前演示程序：PS/2 键盘输入数字 → 数码管滑动显示。
 
-```asm
-; 例：sim/ps2_keyboard_isr.asm
-```
+### 0. 编写汇编源码
+
+ 例：sim/ps2_keyboard_isr.asm
 
 汇编语法详见 [`ABI.md`](ABI.md)。
 
-### 1. 汇编
+### 1. 汇编为16进制
 
 ```powershell
 python scripts\assembler.py sim\ps2_keyboard_isr.asm sim\ps2_keyboard_isr.hex
 ```
 
-### 2. 生成 bitstream
+### 2. 生成 bitstream（vivado路径需要根据实际情况修改）
 
 ```powershell
 & 'D:\vivado18\installed\Vivado\2018.3\bin\vivado.bat' -mode batch -source scripts\vivado_build_nexys4ddr.tcl
