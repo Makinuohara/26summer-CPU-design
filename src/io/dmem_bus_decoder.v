@@ -47,8 +47,8 @@ module dmem_bus_decoder (
     wire hit_ps2 = dmem_addr >= 32'h80000000 && dmem_addr <= 32'h80000007;
     wire hit_sw = dmem_addr >= 32'h80000008 && dmem_addr <= 32'h8000000b;
     wire hit_led = dmem_addr >= 32'h8000000c && dmem_addr <= 32'h8000000f;
-    wire hit_seg = dmem_addr >= 32'h80000010 && dmem_addr <= 32'h8000002f;
-    wire hit_btn = dmem_addr >= 32'h80000030 && dmem_addr <= 32'h80000033;
+    wire hit_seg = dmem_addr >= 32'h80000010 && dmem_addr <= 32'h80000033;
+    wire hit_btn = dmem_addr >= 32'h80000034 && dmem_addr <= 32'h80000037;
     wire hit_intc = dmem_addr >= 32'h81000000 && dmem_addr <= 32'h81200007;
     wire miss = !(hit_mem || hit_ps2 || hit_sw || hit_led || hit_seg || hit_btn || hit_intc);
 

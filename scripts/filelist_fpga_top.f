@@ -1,5 +1,6 @@
 src/clk_div.v
 src/fpga_demo_imem.v
+src/soc.v
 src/fpga_top.v
 src/cpu/pipeline/pipeline_alu.v
 src/cpu/pipeline/pipeline_control_unit.v
@@ -14,6 +15,7 @@ src/io/dmem_bus_decoder.v
 src/io/interrupt_controller.v
 src/io/io_buttons.v
 src/io/io_leds.v
+src/io/io_ps2.v
 src/io/io_seg7.v
 src/io/io_switches.v
 src/memory/memory_internal.vh

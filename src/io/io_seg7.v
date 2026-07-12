@@ -96,17 +96,15 @@ module io_seg7 (
         seg = 7'b1111111;
         if (enabled) begin
             case (scan_index)
-                3'd0: begin
-                    an[0] = 1'b0;
-                    seg = hex_to_seg(hex_value[3:0]);
-                end
-                3'd1: begin
-                    an[1] = 1'b0;
-                    seg = hex_to_seg(hex_value[7:4]);
-                end
-                default: begin
-                    seg = 7'b1111111;
-                end
+                3'd0: begin an[0] = 1'b0; seg = hex_to_seg(raw_digits[0][3:0]); end
+                3'd1: begin an[1] = 1'b0; seg = hex_to_seg(raw_digits[1][3:0]); end
+                3'd2: begin an[2] = 1'b0; seg = hex_to_seg(raw_digits[2][3:0]); end
+                3'd3: begin an[3] = 1'b0; seg = hex_to_seg(raw_digits[3][3:0]); end
+                3'd4: begin an[4] = 1'b0; seg = hex_to_seg(raw_digits[4][3:0]); end
+                3'd5: begin an[5] = 1'b0; seg = hex_to_seg(raw_digits[5][3:0]); end
+                3'd6: begin an[6] = 1'b0; seg = hex_to_seg(raw_digits[6][3:0]); end
+                3'd7: begin an[7] = 1'b0; seg = hex_to_seg(raw_digits[7][3:0]); end
+                default: begin seg = 7'b1111111; end
             endcase
         end
     end

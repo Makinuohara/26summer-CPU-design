@@ -4,7 +4,7 @@ module soc #(
     parameter CLK_DIV_BITS = 18,
     parameter IMEM_ADDR_WIDTH = 12,
     parameter IMEM_LATENCY = 1,
-    parameter IMEM_INIT_FILE = "sim/board_test.hex",
+    parameter IMEM_INIT_FILE = "D:/Code/cpu/advan/26summer-CPU-design/sim/ps2_keyboard_isr.hex",
     parameter DMEM_PHYS_ADDR_WIDTH = 12,
     parameter DMEM_CACHE_LINES = 16,
     parameter DMEM_LINE_WORDS = 4,

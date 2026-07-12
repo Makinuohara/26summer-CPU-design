@@ -1,4 +1,5 @@
 create_project rv32i_cpu_nexys4ddr ./vivado_nexys4ddr -part xc7a100tcsg324-1 -force
+file copy -force ./sim/ps2_keyboard_isr.hex ./vivado_nexys4ddr/ps2_keyboard_isr.hex
 set fp [open ./scripts/filelist_fpga_top.f r]
 set file_data [read $fp]
 close $fp
