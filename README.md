@@ -1,7 +1,6 @@
-# RV32I 流水线 SoC — Nexys 4 DDR
+# 基于nexys4 ddr 的RISC-V 32I SoC
 
-五级流水线 RV32I CPU，集成 PLIC 中断控制器、PS/2 键盘、7 段数码管等外设。
-
+采用哈佛结构，内含五级流水线 RV32I CPU，PLIC 中断控制器，集成 PS/2 键盘、滑动开关、7 段数码管，LED灯等外设。
 
 ## 快速开始（汇编 → 下载 → 运行）
 
