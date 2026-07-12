@@ -10,7 +10,7 @@
 
  例：sim/ps2_keyboard_isr.asm
 
-汇编语法详见 [`ABI.md`](ABI.md)。
+编程模型详见 [`ABI.md`](ABI.md)。
 
 ### 1. 汇编为16进制
 
