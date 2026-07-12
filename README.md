@@ -80,5 +80,4 @@ docs/               设计方案文档
 ## 开发参考
 
 - [`ABI.md`](ABI.md) — 完整 ISA、CSR、内存映射、IO 寄存器、PLIC 编程手册
-- [`AGENTS.md`](AGENTS.md) — 本仓库的 AI agent 开发指令
 - [`docs/调试日志.md`](docs/调试日志.md) — 板卡连接调试记录
