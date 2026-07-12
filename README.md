@@ -46,7 +46,7 @@ python scripts\assembler.py sim\ps2_keyboard_isr.asm sim\ps2_keyboard_isr.hex
 & 'D:\vivado18\installed\Vivado\2018.3\bin\vivado.bat' -mode batch -source scripts\sim_isr_test.tcl
 ```
 
-## 系统架构
+## SoC系统架构
 
 ```
 fpga_top（Nexys 4 DDR 顶层）
@@ -64,7 +64,7 @@ fpga_top（Nexys 4 DDR 顶层）
         └── interrupt_controller     — PLIC（16 源、优先级、claim/complete）
 ```
 
-## 目录
+## 工程目录
 
 ```text
 src/cpu/pipeline/   9 个流水线模块
