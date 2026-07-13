@@ -2,6 +2,7 @@
 #
 # 4 micro-benchmarks, results displayed via switch-triggered ISR.
 # SW[1:0] selects test, SW edge triggers PLIC source 10 → ISR updates display.
+# SEG format is T000IIII: T=test number (1..4), IIII=IPC*100 in hex.
 #
 # DMEM:
 #   0x200+0..0x1C: test results (cycle_diff, instret_diff) × 4
@@ -143,14 +144,10 @@ isr_entry:
     or   x12, x12, x13
     sw   x12, 12(x5)
 
-    # Load instret from DMEM[0x200 + idx*8 + 4]
-    slli x6, x11, 3
-    add  x6, x7, x6
-    lw   x14, 4(x6)
-
-    # SEG: instret hex low 4 digits
+    # SEG: T000IIII, where IIII is IPC*100 in hexadecimal.
     lui  x5, 0x80000
     addi x5, x5, 0x10
+    add  x14, x13, x0
     andi x15, x14, 0xF
     sw   x15, 4(x5)
     srli x14, x14, 4
@@ -162,6 +159,11 @@ isr_entry:
     srli x14, x14, 4
     andi x15, x14, 0xF
     sw   x15, 16(x5)
+    sw   x0, 20(x5)
+    sw   x0, 24(x5)
+    sw   x0, 28(x5)
+    addi x15, x11, 1
+    sw   x15, 32(x5)
 
     # Complete
     lui  x5, 0x81200

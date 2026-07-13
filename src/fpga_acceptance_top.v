@@ -3,7 +3,8 @@
 // Dedicated board top for the system acceptance demo.  Keeping this separate
 // preserves the existing PS/2 keyboard demonstration build.
 module fpga_acceptance_top #(
-    parameter CLK_DIV_BITS = 18
+    parameter CLK_DIV_BITS = 18,
+    parameter IMEM_INIT_FILE = "system_acceptance_demo.hex"
 ) (
     input wire CLK100MHZ,
     input wire CPU_RESETN,
@@ -24,7 +25,7 @@ module fpga_acceptance_top #(
 
     soc #(
         .CLK_DIV_BITS(CLK_DIV_BITS),
-        .IMEM_INIT_FILE("system_acceptance_demo.hex")
+        .IMEM_INIT_FILE(IMEM_INIT_FILE)
     ) u_soc (
         .clk(CLK100MHZ),
         .rst_n(CPU_RESETN),

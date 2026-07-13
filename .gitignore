@@ -10,6 +10,9 @@ vivado_nexys4ddr/
 .DS_Store
 ._*
 vivado_soc*/
+vivado_*/
+build/
+scripts/__pycache__/
 xsim.dir
 webtalk*
 xsim*
