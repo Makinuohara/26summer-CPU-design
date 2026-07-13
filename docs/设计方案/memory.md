@@ -15,9 +15,22 @@ src/memory/
 
 1. `imem` 服务 CPU 独立取指通路，遵循 `imem_req/imem_ack/imem_data` 握手。
 2. `dmem` 作为数据总线下挂设备，接口风格与 I/O 模块保持一致，便于直接接入 `src/io/dmem_bus_decoder.v`。
-3. `cache` 只负责缓存控制逻辑，不再额外拆出独立的 `store`/`subsystem`/`device wrapper` 文件。
+3. `cache` 只负责缓存控制逻辑，并在当前版本中上移到 CPU 内部，不再封装在 `dmem.v` 内。
 4. `imem` 和 `dmem` 的公共存储后端逻辑抽取为共享内部层，不再在两个模块内重复实现。
 5. `dmem_rdata` 始终返回原始 32 位字，由 CPU 自行完成字节/半字提取和符号扩展。
+
+这意味着当前版本的层次边界已经从早期的：
+
+```text
+CPU -> dmem(含cache) -> backend
+```
+
+调整为：
+
+```text
+CPU(含dcache) -> dmem(纯后端主存)
+CPU -> MMIO decoder -> I/O / interrupt_controller
+```
 
 ## 1.1 中断边界
 
@@ -42,8 +55,8 @@ src/memory/
 | 模块 | 责任 |
 | --- | --- |
 | `imem.v` | 指令存储器，面向 CPU 取指总线 |
-| `dmem.v` | 数据存储设备，面向数据总线译码器 |
-| `cache.v` | 直接映射 D-Cache，处理 hit/miss/fill/write-through |
+| `dmem.v` | 纯后端数据存储器，面向 CPU 内置 cache 或 SoC 数据总线 |
+| `cache.v` | 直接映射 D-Cache，当前由 CPU 内部实例化使用 |
 
 此外，`src/memory/memory_internal.vh` 提供共享内部模块 `memory_backend_core`，统一封装：
 
@@ -127,23 +140,27 @@ input  wire mem_fault
 
 ### 4.3 内部结构
 
-`dmem.v` 内部包含两部分：
+当前 `dmem.v` 不再内含 `cache`，只保留：
 
-1. 一个实例化的 `cache.v`
-2. 一个共享后端 `memory_backend_core`
+1. 一个共享后端 `memory_backend_core`
+2. 针对 `word/half/byte` 写入的本地写掩码展开逻辑
+3. 地址对齐与宽度合法性检查
 
-因此虽然对外交付仍然是三模块结构，但内部层次已经收敛为：
+因此当前层次结构为：
 
 ```text
-数据总线 -> dmem -> cache -> memory_backend_core
+CPU internal dcache -> dmem -> memory_backend_core
 ```
+
+这里的设计意图是把 cache 拉近 CPU，而不是继续把 cache 和主存放在同一个存储封装中。
 
 ### 4.4 访问语义
 
 1. 支持 `word / half / byte` 写入
 2. 读返回包含目标字节所在整字的原始 32 位值
-3. 地址超出物理容量时返回 `dmem_fault=1`
-4. `dmem_irq` 恒为 `0`
+3. 地址未对齐或宽度非法时立即返回 `dmem_fault=1`
+4. 地址超出物理容量时由后端返回 `dmem_fault=1`
+5. `dmem_irq` 恒为 `0`
 
 ### 4.5 为什么 `dmem` 不做中断
 
@@ -170,7 +187,7 @@ input  wire mem_fault
 
 ### 5.2 CPU/设备侧接口
 
-`cache.v` 面向 `dmem.v` 的上层请求：
+`cache.v` 当前面向 CPU 内部主存访问路径，而不是直接面向整个 SoC 设备树：
 
 ```verilog
 req / addr / we / wdata / width
@@ -184,10 +201,10 @@ ack / rdata / fault
 
 ### 5.3 后端侧接口
 
-`cache.v` 不直接操作顶层总线，而是通过一组内部后端接口访问共享存储后端：
+`cache.v` 不直接操作 I/O 设备，而是通过一组内部后端接口访问 `dmem.v` 暴露出的主存接口：
 
 ```verilog
-mem_req / mem_we / mem_addr / mem_wdata / mem_wstrb
+mem_req / mem_we / mem_addr / mem_wdata / mem_width
 mem_ack / mem_rdata / mem_fault
 ```
 
@@ -208,29 +225,42 @@ mem_ack / mem_rdata / mem_fault
 写命中：
 
 1. 更新缓存行对应字节
-2. 同时写后端物理存储
+2. 同时写后端物理存储（write-through）
 
 写失效：
 
 1. 不分配新 cache line
-2. 直接写后端物理存储
+2. 直接写后端物理存储（write-no-allocate）
+
+### 5.5 当前集成位置
+
+当前 `cache.v` 不再由 `dmem.v` 实例化，而是由 `pipeline_cpu_top.v` 内部实例化，并通过地址判断只接管主存区访问：
+
+```text
+addr < 0x0800_0000   -> cached
+addr >= 0x0800_0000  -> MMIO bypass
+```
+
+这样可以避免 cache 和真实存储后端共享同一层模块封装，从结构上更符合“CPU 近端缓存 + 远端主存”的设计目标。
 
 ## 6. 当前版本的边界
 
 这版存储系统已经符合当前架构方向，但仍有明确边界：
 
 1. `imem` 仍然是独立指令存储器，不和 I/O 共用数据总线
-2. `dmem` 已经按“总线设备”形式实现，可直接挂到 `dmem_bus_decoder`
-3. 存储模块不承担中断源职责，`dmem_irq` 当前固定为 `0`
-4. cache 统计寄存器、DDR 后端替换、I-Cache 还未展开
+2. `dmem` 已退化为纯后端主存，不再承担缓存管理
+3. D-Cache 当前只覆盖数据主存路径，不缓存 MMIO
+4. 存储模块不承担中断源职责，`dmem_irq` 当前固定为 `0`
+5. cache 统计寄存器、Victim Cache、I-Cache 还未展开
 
 ## 7. 推荐集成方式
 
 系统顶层建议这样接：
 
 1. CPU 的 `imem_*` 直接连接 `imem.v`
-2. CPU 的 `dmem_*` 先连接 `src/io/dmem_bus_decoder.v`
-3. 译码器的 `mem_*` 端口再连接 `dmem.v`
-4. 译码器其余 `sw/led/seg/btn/intc` 端口连接各 I/O 模块
+2. CPU 内部主存访问先经过 D-Cache
+3. CPU 对外暴露的 `dmem_*` 再连接 `src/io/dmem_bus_decoder.v`
+4. 译码器的 `mem_*` 端口连接 `dmem.v`
+5. 译码器其余 `sw/led/seg/btn/intc` 端口连接各 I/O 模块
 
 这样 CPU、内存和 I/O 的职责边界是清楚的，后续联调也最稳定。

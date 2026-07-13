@@ -1,6 +1,9 @@
 `timescale 1ns / 1ps
 
-module pipeline_cpu_top (
+module pipeline_cpu_top #(
+    parameter DCACHE_LINES = 16,
+    parameter DCACHE_LINE_WORDS = 4
+) (
     input wire clk,
     input wire rst_n,
 
@@ -211,8 +214,22 @@ module pipeline_cpu_top (
     );
 
     wire mem_active = ex_mem_valid && (ex_mem_mem_read || ex_mem_mem_write);
+    wire [31:0] core_dmem_addr = ex_mem_alu_result;
+    wire core_dmem_req = mem_active;
+    wire core_dmem_cached = core_dmem_addr < 32'h0800_0000;
+    wire [31:0] cache_dmem_addr;
+    wire cache_dmem_req;
+    wire cache_dmem_we;
+    wire [31:0] cache_dmem_wdata;
+    wire [1:0] cache_dmem_width;
+    wire cache_ack;
+    wire [31:0] cache_rdata;
+    wire cache_fault;
+    wire dmem_rsp_ack = core_dmem_cached ? cache_ack : dmem_ack;
+    wire [31:0] dmem_rsp_rdata = core_dmem_cached ? cache_rdata : dmem_rdata;
+    wire dmem_rsp_fault = core_dmem_cached ? cache_fault : dmem_fault;
     wire imem_wait = imem_req && !imem_ack;
-    wire dmem_wait = mem_active && !dmem_ack;
+    wire dmem_wait = mem_active && !dmem_rsp_ack;
     // Front-end fetch wait should not freeze the older pipeline stages. Otherwise
     // an instruction already sitting in IF/ID only moves forward when the *next*
     // instruction arrives, and older EX/MEM/WB stages can be replayed or delayed.
@@ -310,11 +327,35 @@ module pipeline_cpu_top (
     assign imem_req = rst_n && !interrupt_drain_active;
     assign imem_addr = pc;
 
-    assign dmem_req = mem_active;
-    assign dmem_addr = ex_mem_alu_result;
-    assign dmem_we = ex_mem_mem_write;
-    assign dmem_wdata = ex_mem_store_data;
-    assign dmem_width = ex_mem_mem_width;
+    cache #(
+        .CACHE_LINES(DCACHE_LINES),
+        .LINE_WORDS(DCACHE_LINE_WORDS)
+    ) u_dcache (
+        .clk(clk),
+        .rst_n(rst_n),
+        .req(core_dmem_req && core_dmem_cached),
+        .addr(core_dmem_addr),
+        .we(ex_mem_mem_write),
+        .wdata(ex_mem_store_data),
+        .width(ex_mem_mem_width),
+        .ack(cache_ack),
+        .rdata(cache_rdata),
+        .fault(cache_fault),
+        .mem_req(cache_dmem_req),
+        .mem_we(cache_dmem_we),
+        .mem_addr(cache_dmem_addr),
+        .mem_wdata(cache_dmem_wdata),
+        .mem_width(cache_dmem_width),
+        .mem_ack(dmem_ack),
+        .mem_rdata(dmem_rdata),
+        .mem_fault(dmem_fault)
+    );
+
+    assign dmem_req = core_dmem_cached ? cache_dmem_req : core_dmem_req;
+    assign dmem_addr = core_dmem_cached ? cache_dmem_addr : core_dmem_addr;
+    assign dmem_we = core_dmem_cached ? cache_dmem_we : ex_mem_mem_write;
+    assign dmem_wdata = core_dmem_cached ? cache_dmem_wdata : ex_mem_store_data;
+    assign dmem_width = core_dmem_cached ? cache_dmem_width : ex_mem_mem_width;
 
     assign debug_pc = pc;
 
@@ -532,13 +573,13 @@ module pipeline_cpu_top (
             mem_wb_pc <= ex_mem_pc;
             mem_wb_pc4 <= ex_mem_pc4;
             mem_wb_alu_result <= ex_mem_alu_result;
-            mem_wb_mem_data <= dmem_rdata;
+            mem_wb_mem_data <= dmem_rsp_rdata;
             mem_wb_imm <= ex_mem_imm;
             mem_wb_csr_wdata <= ex_mem_csr_wdata;
             mem_wb_rd <= ex_mem_rd;
             mem_wb_reg_write <= ex_mem_reg_write;
             mem_wb_wb_sel <= ex_mem_wb_sel;
-            mem_wb_fault <= ex_mem_fault || (mem_active && dmem_fault);
+            mem_wb_fault <= ex_mem_fault || (mem_active && dmem_rsp_fault);
             mem_wb_csr_en <= ex_mem_csr_en;
             mem_wb_csr_op <= ex_mem_csr_op;
             mem_wb_csr_addr <= ex_mem_csr_addr;
@@ -572,13 +613,13 @@ module pipeline_cpu_top (
             mem_wb_pc <= ex_mem_pc;
             mem_wb_pc4 <= ex_mem_pc4;
             mem_wb_alu_result <= ex_mem_alu_result;
-            mem_wb_mem_data <= dmem_rdata;
+            mem_wb_mem_data <= dmem_rsp_rdata;
             mem_wb_imm <= ex_mem_imm;
             mem_wb_csr_wdata <= ex_mem_csr_wdata;
             mem_wb_rd <= ex_mem_rd;
             mem_wb_reg_write <= ex_mem_reg_write;
             mem_wb_wb_sel <= ex_mem_wb_sel;
-            mem_wb_fault <= ex_mem_fault || (mem_active && dmem_fault);
+            mem_wb_fault <= ex_mem_fault || (mem_active && dmem_rsp_fault);
             mem_wb_csr_en <= ex_mem_csr_en;
             mem_wb_csr_op <= ex_mem_csr_op;
             mem_wb_csr_addr <= ex_mem_csr_addr;

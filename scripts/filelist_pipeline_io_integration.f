@@ -7,6 +7,7 @@ src/cpu/pipeline/pipeline_imm_gen.v
 src/cpu/pipeline/pipeline_perf_counter.v
 src/cpu/pipeline/pipeline_regfile.v
 src/cpu/pipeline/pipeline_cpu_top.v
+src/memory/cache.v
 src/io/dmem_bus_decoder.v
 src/io/interrupt_controller.v
 src/io/io_buttons.v

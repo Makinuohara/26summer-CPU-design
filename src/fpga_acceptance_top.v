@@ -1,6 +1,8 @@
 `timescale 1ns / 1ps
 
-module fpga_top #(
+// Dedicated board top for the system acceptance demo.  Keeping this separate
+// preserves the existing PS/2 keyboard demonstration build.
+module fpga_acceptance_top #(
     parameter CLK_DIV_BITS = 18
 ) (
     input wire CLK100MHZ,
@@ -21,7 +23,8 @@ module fpga_top #(
     wire [4:0] board_btn = {BTNC, BTNU, BTNR, BTND, BTNL};
 
     soc #(
-        .CLK_DIV_BITS(CLK_DIV_BITS)
+        .CLK_DIV_BITS(CLK_DIV_BITS),
+        .IMEM_INIT_FILE("system_acceptance_demo.hex")
     ) u_soc (
         .clk(CLK100MHZ),
         .rst_n(CPU_RESETN),
@@ -42,5 +45,4 @@ module fpga_top #(
         .debug_seg_value(),
         .meip()
     );
-
 endmodule

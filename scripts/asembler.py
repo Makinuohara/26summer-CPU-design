@@ -36,7 +36,7 @@ def enc(line, labels, current_addr):
         d,s1,s2=rn(p[1]),rn(p[2]),rn(p[3]);f7,f3=rv[op]
         return (f7<<25)|(s2<<20)|(s1<<15)|(f3<<12)|(d<<7)|0x33
 
-    ia = {'addi':0,'slli':1,'srli':5,'xori':4,'ori':6,'andi':7,'slti':2,'sltiu':3}
+    ia = {'addi':0,'slli':1,'srli':5,'srai':5,'xori':4,'ori':6,'andi':7,'slti':2,'sltiu':3}
     if op in ia:
         d,s1=rn(p[1]),rn(p[2]);v=imm(p[3])&0xFFF;f3=ia[op]
         if op=='srai': v=((0x20<<5)|(v&0x1F))&0xFFF

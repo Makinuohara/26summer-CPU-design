@@ -1,5 +1,6 @@
 src/clk_div.v
-src/seg7_hex.v
+src/soc.v
+src/fpga_acceptance_top.v
 src/cpu/pipeline/pipeline_alu.v
 src/cpu/pipeline/pipeline_control_unit.v
 src/cpu/pipeline/pipeline_csr_unit.v
@@ -9,5 +10,14 @@ src/cpu/pipeline/pipeline_imm_gen.v
 src/cpu/pipeline/pipeline_perf_counter.v
 src/cpu/pipeline/pipeline_regfile.v
 src/cpu/pipeline/pipeline_cpu_top.v
+src/io/dmem_bus_decoder.v
+src/io/interrupt_controller.v
+src/io/io_buttons.v
+src/io/io_leds.v
+src/io/io_ps2.v
+src/io/io_seg7.v
+src/io/io_switches.v
+src/memory/memory_internal.vh
 src/memory/cache.v
-src/cpu/pipeline/fpga_pipeline_cpu_smoke_top.v
+src/memory/dmem.v
+src/memory/imem.v
