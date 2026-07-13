@@ -1,7 +1,6 @@
 src/clk_div.v
-src/fpga_demo_imem.v
 src/soc.v
-src/fpga_top.v
+src/fpga_acceptance_top.v
 src/cpu/pipeline/pipeline_alu.v
 src/cpu/pipeline/pipeline_control_unit.v
 src/cpu/pipeline/pipeline_csr_unit.v

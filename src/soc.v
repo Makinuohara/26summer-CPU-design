@@ -4,7 +4,7 @@ module soc #(
     parameter CLK_DIV_BITS = 18,
     parameter IMEM_ADDR_WIDTH = 12,
     parameter IMEM_LATENCY = 1,
-    parameter IMEM_INIT_FILE = "board_test.mem",
+    parameter IMEM_INIT_FILE = "D:/Code/cpu/advan/26summer-CPU-design/sim/ps2_keyboard_isr.hex",
     parameter DMEM_PHYS_ADDR_WIDTH = 12,
     parameter DMEM_CACHE_LINES = 16,
     parameter DMEM_LINE_WORDS = 4,
@@ -71,6 +71,7 @@ module soc #(
     wire led_cs;
     wire seg_cs;
     wire btn_cs;
+    wire perf_cs;
     wire intc_cs;
 
     wire [31:0] sw_rdata;
@@ -89,6 +90,10 @@ module soc #(
     wire btn_ack;
     wire btn_fault;
     wire btn_irq;
+
+    wire perf_ack;
+    wire [31:0] perf_rdata;
+    wire perf_fault;
 
     wire intc_ack;
     wire [31:0] intc_rdata;
@@ -168,6 +173,10 @@ module soc #(
         .btn_ack(btn_ack),
         .btn_rdata(btn_rdata),
         .btn_fault(btn_fault),
+        .perf_cs(perf_cs),
+        .perf_ack(perf_ack),
+        .perf_rdata(perf_rdata),
+        .perf_fault(perf_fault),
         .intc_cs(intc_cs),
         .intc_ack(intc_ack),
         .intc_rdata(intc_rdata),
@@ -270,6 +279,20 @@ module soc #(
         .dmem_fault(btn_fault),
         .dmem_irq(btn_irq),
         .btn(btn)
+    );
+
+    perf_reader u_perf (
+        .debug_cycle(debug_cycle),
+        .debug_instret(debug_instret),
+        .dmem_cs(perf_cs),
+        .dmem_addr(dmem_addr),
+        .dmem_we(dmem_we),
+        .dmem_wdata(dmem_wdata),
+        .dmem_width(dmem_width),
+        .dmem_ack(perf_ack),
+        .dmem_rdata(perf_rdata),
+        .dmem_fault(perf_fault),
+        .dmem_irq()
     );
 
     interrupt_controller u_intc (
