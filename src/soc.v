@@ -4,7 +4,7 @@ module soc #(
     parameter CLK_DIV_BITS = 18,
     parameter IMEM_ADDR_WIDTH = 12,
     parameter IMEM_LATENCY = 1,
-    parameter IMEM_INIT_FILE = "sim/board_test.hex",
+    parameter IMEM_INIT_FILE = "board_test.mem",
     parameter DMEM_PHYS_ADDR_WIDTH = 12,
     parameter DMEM_CACHE_LINES = 16,
     parameter DMEM_LINE_WORDS = 4,
@@ -96,7 +96,10 @@ module soc #(
     wire intc_irq;
     wire [15:0] irq_sources = {5'b0, sw_irq, 1'b0, btn_irq, 5'b0, ps2_irq, 2'b0};
 
-    pipeline_cpu_top u_cpu (
+    pipeline_cpu_top #(
+        .DCACHE_LINES(DMEM_CACHE_LINES),
+        .DCACHE_LINE_WORDS(DMEM_LINE_WORDS)
+    ) u_cpu (
         .clk(cpu_clk),
         .rst_n(rst_n),
         .imem_req(imem_req),
@@ -173,8 +176,6 @@ module soc #(
 
     dmem #(
         .PHYS_ADDR_WIDTH(DMEM_PHYS_ADDR_WIDTH),
-        .CACHE_LINES(DMEM_CACHE_LINES),
-        .LINE_WORDS(DMEM_LINE_WORDS),
         .MEM_LATENCY(DMEM_LATENCY)
     ) u_dmem (
         .clk(cpu_clk),

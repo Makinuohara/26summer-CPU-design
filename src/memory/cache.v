@@ -20,7 +20,7 @@ module cache #(
     output reg mem_we,
     output reg [31:0] mem_addr,
     output reg [31:0] mem_wdata,
-    output reg [3:0] mem_wstrb,
+    output reg [1:0] mem_width,
     input wire mem_ack,
     input wire [31:0] mem_rdata,
     input wire mem_fault
@@ -121,60 +121,6 @@ module cache #(
         end
     endtask
 
-    task automatic calc_write_mask;
-        input [31:0] addr_i;
-        input [1:0] width_i;
-        input [31:0] wdata_i;
-        output [3:0] wstrb_o;
-        output [31:0] wdata_o;
-        begin
-            wstrb_o = 4'b0000;
-            wdata_o = 32'b0;
-            case (width_i)
-                WIDTH_WORD: begin
-                    wstrb_o = 4'b1111;
-                    wdata_o = wdata_i;
-                end
-                WIDTH_HALF: begin
-                    if (addr_i[1] == 1'b0) begin
-                        wstrb_o = 4'b0011;
-                        wdata_o = {16'b0, wdata_i[15:0]};
-                    end else begin
-                        wstrb_o = 4'b1100;
-                        wdata_o = {wdata_i[15:0], 16'b0};
-                    end
-                end
-                WIDTH_BYTE: begin
-                    case (addr_i[1:0])
-                        2'b00: begin
-                            wstrb_o = 4'b0001;
-                            wdata_o = {24'b0, wdata_i[7:0]};
-                        end
-                        2'b01: begin
-                            wstrb_o = 4'b0010;
-                            wdata_o = {16'b0, wdata_i[7:0], 8'b0};
-                        end
-                        2'b10: begin
-                            wstrb_o = 4'b0100;
-                            wdata_o = {8'b0, wdata_i[7:0], 16'b0};
-                        end
-                        default: begin
-                            wstrb_o = 4'b1000;
-                            wdata_o = {wdata_i[7:0], 24'b0};
-                        end
-                    endcase
-                end
-                default: begin
-                    wstrb_o = 4'b0000;
-                    wdata_o = 32'b0;
-                end
-            endcase
-        end
-    endtask
-
-    reg [3:0] write_mask_tmp;
-    reg [31:0] write_data_tmp;
-
     always @(*) begin
         ack = resp_valid;
         rdata = resp_data;
@@ -192,7 +138,7 @@ module cache #(
             mem_we <= 1'b0;
             mem_addr <= 32'b0;
             mem_wdata <= 32'b0;
-            mem_wstrb <= 4'b0000;
+            mem_width <= WIDTH_WORD;
 
             req_addr_q <= 32'b0;
             req_we_q <= 1'b0;
@@ -221,9 +167,9 @@ module cache #(
                     mem_we <= 1'b0;
                     mem_addr <= 32'b0;
                     mem_wdata <= 32'b0;
-                    mem_wstrb <= 4'b0000;
+                    mem_width <= WIDTH_WORD;
 
-                    if (req) begin
+                    if (req && !resp_valid) begin
                         if (!req_width_ok || !req_align_ok) begin
                             resp_valid <= 1'b1;
                             resp_fault <= 1'b1;
@@ -238,12 +184,11 @@ module cache #(
                                 update_cache_word(req_index, req_word, addr, width, wdata);
                             end
 
-                            calc_write_mask(addr, width, wdata, write_mask_tmp, write_data_tmp);
                             mem_req <= 1'b1;
                             mem_we <= 1'b1;
                             mem_addr <= addr;
-                            mem_wdata <= write_data_tmp;
-                            mem_wstrb <= write_mask_tmp;
+                            mem_wdata <= wdata;
+                            mem_width <= width;
                             state <= ST_WRITE_WAIT;
                         end else if (req_hit) begin
                             resp_valid <= 1'b1;
@@ -267,7 +212,7 @@ module cache #(
                     mem_we <= 1'b0;
                     mem_addr <= fill_base_addr_q + {{(32-LINE_BITS-2){1'b0}}, fill_word_q, 2'b00};
                     mem_wdata <= 32'b0;
-                    mem_wstrb <= 4'b0000;
+                    mem_width <= WIDTH_WORD;
                     state <= ST_FILL_WAIT;
                 end
 
