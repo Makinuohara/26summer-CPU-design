@@ -234,6 +234,18 @@ module tb_system_acceptance_demo;
         report_interval("taken-branch", 2, 3);
         report_interval("cache-conflict", 3, 4);
 
+        repeat (100) @(posedge dut.cpu_clk);
+        if (dut.u_dmem.u_backend.mem[16'h087] == 0 ||
+            dut.u_dmem.u_backend.mem[16'h088] == 0) begin
+            $display("FAIL: performance MMIO snapshot cycle=%0d instret=%0d",
+                     dut.u_dmem.u_backend.mem[16'h087], dut.u_dmem.u_backend.mem[16'h088]);
+            $finish;
+        end
+        $display("PERF MMIO full-workload cycles=%0d instret=%0d CPIx100=%0d",
+                 dut.u_dmem.u_backend.mem[16'h087], dut.u_dmem.u_backend.mem[16'h088],
+                 (dut.u_dmem.u_backend.mem[16'h087] * 100) /
+                 dut.u_dmem.u_backend.mem[16'h088]);
+
         repeat (2000) @(posedge dut.cpu_clk);
         if ((displayed_word() >> 28) !== 4'h5) begin
             $display("FAIL: benchmark result page not displayed, display=%h", displayed_word());
@@ -283,6 +295,17 @@ module tb_system_acceptance_demo;
             $display("FAIL: button dashboard value=%h count=%0d claim=%0d led=%h meip=%b",
                      dut.u_dmem.u_backend.mem[16'h085], dut.u_dmem.u_backend.mem[16'h086],
                      dut.u_dmem.u_backend.mem[16'h082], led, meip);
+            $finish;
+        end
+
+        set_switch_and_wait(16'h9063, 32'h96301202);
+        if (led !== 16'h0012) begin
+            $display("FAIL: MUL/DIV page expected product LED 0012, got %h", led);
+            $finish;
+        end
+        set_switch_and_wait(16'h9050, 32'h950000ff);
+        if (led !== 16'h0000) begin
+            $display("FAIL: DIV-by-zero page expected product LED 0000, got %h", led);
             $finish;
         end
 

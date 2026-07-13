@@ -31,7 +31,8 @@ def enc(line, labels, current_addr):
     if op == 'nop': return 0x00000013
 
     rv = {'add':(0,0),'sub':(0x20,0),'sll':(0,1),'slt':(0,2),'sltu':(0,3),
-          'xor':(0,4),'srl':(0,5),'sra':(0x20,5),'or':(0,6),'and':(0,7)}
+          'xor':(0,4),'srl':(0,5),'sra':(0x20,5),'or':(0,6),'and':(0,7),
+          'mul':(0x01,0),'div':(0x01,4)}
     if op in rv:
         d,s1,s2=rn(p[1]),rn(p[2]),rn(p[3]);f7,f3=rv[op]
         return (f7<<25)|(s2<<20)|(s1<<15)|(f3<<12)|(d<<7)|0x33

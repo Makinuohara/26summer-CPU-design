@@ -3,13 +3,14 @@
 # SW[15:12] selects a page; SW[11:0] is page input.
 #   0 self-test, 1 MMIO mirror, 2 ALU, 3 DMEM/cache,
 #   4 Fibonacci, 5 pipeline benchmark, 6 interrupt dashboard,
-#   7 PS/2 dashboard, 8 push-button dashboard.
+#   7 PS/2 dashboard, 8 push-button dashboard, 9 MUL/DIV demo.
 #
 # DMEM layout:
 #   0x000..0x00c cache test line, 0x100 conflict line
 #   0x200 switch snapshot, 0x204 switch IRQ count
 #   0x208 last claim ID, 0x20c PS/2 scan code, 0x210 PS/2 IRQ count
 #   0x214 button bitmap, 0x218 button IRQ count
+#   0x21c benchmark cycle delta, 0x220 benchmark instret delta
 #   0x380 benchmark marker, 0x400.. ISR save area
 
     # Clear software-visible state.
@@ -80,6 +81,8 @@ main_loop:
     beq  x7, x8, page_ps2
     addi x8, x0, 8
     beq  x7, x8, page_buttons
+    addi x8, x0, 9
+    beq  x7, x8, page_muldiv
     jal  x0, page_unsupported
 
 page_self_test:
@@ -206,6 +209,10 @@ fib_done:
     jal  x0, main_loop
 
 page_benchmark:
+    # Snapshot the MMIO-exposed hardware counters around the full workload.
+    lui  x18, 0x80000
+    lw   x17, 56(x18)
+    lw   x19, 60(x18)
     # Marker writes delimit workloads for the acceptance testbench.
     addi x20, x0, 0x380
     addi x21, x0, 0x51
@@ -252,6 +259,13 @@ bench_conflict:
 
     addi x21, x0, 0x55
     sw   x21, 0(x20)
+    lui  x16, 0x80000
+    lw   x14, 56(x16)
+    lw   x15, 60(x16)
+    sub  x14, x14, x17
+    sub  x15, x15, x19
+    sw   x14, 0x21c(x5)
+    sw   x15, 0x220(x5)
     lui  x10, 0x50000
     andi x12, x12, 0xfff
     or   x10, x10, x12
@@ -297,8 +311,30 @@ page_buttons:
     jal  x1, write_outputs
     jal  x0, main_loop
 
+page_muldiv:
+    # Input a=SW[7:4], b=SW[3:0]. Display 9AB0MMDD, where MM=a*b
+    # and DD=signed(a/b), both shown in their low eight bits.
+    srli x12, x6, 4
+    andi x12, x12, 0xf
+    andi x13, x6, 0xf
+    mul  x14, x12, x13
+    div  x15, x12, x13
+    lui  x10, 0x90000
+    slli x16, x12, 24
+    or   x10, x10, x16
+    slli x16, x13, 20
+    or   x10, x10, x16
+    andi x14, x14, 0xff
+    slli x16, x14, 8
+    or   x10, x10, x16
+    andi x15, x15, 0xff
+    or   x10, x10, x15
+    add  x11, x14, x0
+    jal  x1, write_outputs
+    jal  x0, main_loop
+
 page_unsupported:
-    # Pages 9..F are deliberately obvious instead of aliasing page 7.
+    # Pages A..F are deliberately obvious instead of aliasing another page.
     lui  x10, 0xf0000
     or   x10, x10, x7
     addi x11, x0, 0

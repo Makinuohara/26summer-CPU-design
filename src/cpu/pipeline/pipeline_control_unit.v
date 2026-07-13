@@ -42,6 +42,8 @@ module pipeline_control_unit (
     localparam ALU_SRA  = 4'd7;
     localparam ALU_SLT  = 4'd8;
     localparam ALU_SLTU = 4'd9;
+    localparam ALU_MUL  = 4'd10;
+    localparam ALU_DIV  = 4'd11;
 
     localparam WB_ALU = 2'd0;
     localparam WB_MEM = 2'd1;
@@ -58,6 +60,7 @@ module pipeline_control_unit (
 
     wire funct7_base = (funct7 == 7'b0000000);
     wire funct7_alt = (funct7 == 7'b0100000);
+    wire funct7_muldiv = (funct7 == 7'b0000001);
 
     always @(*) begin
         reg_write = 1'b0;
@@ -79,17 +82,28 @@ module pipeline_control_unit (
         case (opcode)
             OPCODE_OP: begin
                 reg_write = 1'b1;
-                case (funct3)
-                    3'b000: alu_ctrl = funct7_alt ? ALU_SUB : ALU_ADD;
-                    3'b001: alu_ctrl = ALU_SLL;
-                    3'b010: alu_ctrl = ALU_SLT;
-                    3'b011: alu_ctrl = ALU_SLTU;
-                    3'b100: alu_ctrl = ALU_XOR;
-                    3'b101: alu_ctrl = funct7_alt ? ALU_SRA : ALU_SRL;
-                    3'b110: alu_ctrl = ALU_OR;
-                    3'b111: alu_ctrl = ALU_AND;
-                    default: alu_ctrl = ALU_ADD;
-                endcase
+                if (funct7_muldiv) begin
+                    case (funct3)
+                        3'b000: alu_ctrl = ALU_MUL;
+                        3'b100: alu_ctrl = ALU_DIV;
+                        default: begin
+                            reg_write = 1'b0;
+                            alu_ctrl = ALU_ADD;
+                        end
+                    endcase
+                end else begin
+                    case (funct3)
+                        3'b000: alu_ctrl = funct7_alt ? ALU_SUB : ALU_ADD;
+                        3'b001: alu_ctrl = ALU_SLL;
+                        3'b010: alu_ctrl = ALU_SLT;
+                        3'b011: alu_ctrl = ALU_SLTU;
+                        3'b100: alu_ctrl = ALU_XOR;
+                        3'b101: alu_ctrl = funct7_alt ? ALU_SRA : ALU_SRL;
+                        3'b110: alu_ctrl = ALU_OR;
+                        3'b111: alu_ctrl = ALU_AND;
+                        default: alu_ctrl = ALU_ADD;
+                    endcase
+                end
             end
             OPCODE_OP_IMM: begin
                 reg_write = 1'b1;

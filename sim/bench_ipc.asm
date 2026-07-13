@@ -39,6 +39,8 @@
 
     # === Precompute IPC*100 for all 4 tests ===
     # Results go to DMEM[0x220 + idx*4]
+    lui  x8, 0x0
+    addi x8, x8, 0x200       # do_test advanced x8; restore results base
     addi x5, x0, 0
 ipc_pre:
     slli x6, x5, 3

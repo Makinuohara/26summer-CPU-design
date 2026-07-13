@@ -36,6 +36,10 @@ start:
         lines = self.assemble("srai x5, x6, 7\n")
         self.assertEqual(lines, ["@0", "40735293"])
 
+    def test_mul_div_encoding(self):
+        lines = self.assemble("mul x4, x2, x3\ndiv x5, x4, x2\n")
+        self.assertEqual(lines, ["@0", "02310233", "022242B3"])
+
 
 if __name__ == "__main__":
     unittest.main()

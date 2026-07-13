@@ -59,6 +59,10 @@
 | SRA  | 0x20   | 0x5    | rd = signed(rs1) >>> rs2[4:0]    |
 | OR   | 0x00   | 0x6    | rd = rs1\| rs2                   |
 | AND  | 0x00   | 0x7    | rd = rs1 & rs2                   |
+| MUL  | 0x01   | 0x0    | rd = low32(rs1 × rs2)            |
+| DIV  | 0x01   | 0x4    | rd = signed(rs1) / signed(rs2)   |
+
+> 当前只实现 RV32M 的 `MUL` 和有符号 `DIV`。`DIV` 除数为 0 时返回 `0xFFFF_FFFF`；`0x8000_0000 / -1` 返回 `0x8000_0000`。未实现 `MULH/MULHU/MULHSU/DIVU/REM/REMU`。
 
 ### 3.2 I-type ALU（opcode = 0x13）
 

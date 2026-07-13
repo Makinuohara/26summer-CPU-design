@@ -17,6 +17,7 @@ src/io/io_leds.v
 src/io/io_ps2.v
 src/io/io_seg7.v
 src/io/io_switches.v
+src/io/perf_reader.v
 src/memory/memory_internal.vh
 src/memory/cache.v
 src/memory/dmem.v
