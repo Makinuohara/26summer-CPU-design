@@ -4,6 +4,7 @@ module tb_system_acceptance_demo;
     reg clk;
     reg rst_n;
     reg [15:0] sw;
+    reg [4:0] btn;
     reg ps2_clk;
     reg ps2_data;
 
@@ -33,7 +34,7 @@ module tb_system_acceptance_demo;
         .clk(clk),
         .rst_n(rst_n),
         .sw(sw),
-        .btn(5'b0),
+        .btn(btn),
         .ps2_clk(ps2_clk),
         .ps2_data(ps2_data),
         .led(led),
@@ -73,6 +74,26 @@ module tb_system_acceptance_demo;
             end
             if (displayed_word() !== expected) begin
                 $display("FAIL: display expected=%h actual=%h led=%h pc=%h", expected, displayed_word(), led, debug_pc);
+                $finish;
+            end
+        end
+    endtask
+
+    task press_button_and_wait;
+        input [4:0] value;
+        input [15:0] expected_count;
+        reg [31:0] expected_display;
+        reg [31:0] count_after_press;
+        begin
+            expected_display = 32'h88000000 | ({27'b0, value} << 16) | expected_count;
+            btn = value;
+            wait_display(expected_display, 32'd10000);
+            count_after_press = dut.u_dmem.u_backend.mem[16'h086];
+            btn = 5'b0;
+            repeat (300) @(posedge dut.cpu_clk);
+            if (dut.u_dmem.u_backend.mem[16'h086] !== count_after_press) begin
+                $display("FAIL: releasing button generated an IRQ, before=%0d after=%0d",
+                         count_after_press, dut.u_dmem.u_backend.mem[16'h086]);
                 $finish;
             end
         end
@@ -158,6 +179,7 @@ module tb_system_acceptance_demo;
     initial begin
         rst_n = 1'b0;
         sw = 16'h0000;
+        btn = 5'b0;
         ps2_clk = 1'b1;
         ps2_data = 1'b1;
         marker_seen = 0;
@@ -194,7 +216,7 @@ module tb_system_acceptance_demo;
         sw = 16'h5000;
     end
 
-    initial begin : benchmark_and_ps2
+    initial begin : benchmark_and_io
         integer timeout;
         wait (rst_n == 1'b1);
         wait (sw == 16'h5000);
@@ -243,6 +265,24 @@ module tb_system_acceptance_demo;
         if (dut.u_dmem.u_backend.mem[16'h083] !== 32'h1b || dut.u_dmem.u_backend.mem[16'h084] < 2) begin
             $display("FAIL: second PS/2 byte code=%h count=%0d",
                      dut.u_dmem.u_backend.mem[16'h083], dut.u_dmem.u_backend.mem[16'h084]);
+            $finish;
+        end
+
+        sw = 16'h8000;
+        wait_display(32'h88000000, 32'd10000);
+        press_button_and_wait(5'b00001, 16'd1);
+        press_button_and_wait(5'b00010, 16'd2);
+        press_button_and_wait(5'b00100, 16'd3);
+        press_button_and_wait(5'b01000, 16'd4);
+        press_button_and_wait(5'b10000, 16'd5);
+        press_button_and_wait(5'b10101, 16'd6);
+        if (dut.u_dmem.u_backend.mem[16'h085] !== 32'h15 ||
+            dut.u_dmem.u_backend.mem[16'h086] !== 32'd6 ||
+            dut.u_dmem.u_backend.mem[16'h082] !== 32'd8 ||
+            led !== 16'h0035 || meip !== 1'b0) begin
+            $display("FAIL: button dashboard value=%h count=%0d claim=%0d led=%h meip=%b",
+                     dut.u_dmem.u_backend.mem[16'h085], dut.u_dmem.u_backend.mem[16'h086],
+                     dut.u_dmem.u_backend.mem[16'h082], led, meip);
             $finish;
         end
 

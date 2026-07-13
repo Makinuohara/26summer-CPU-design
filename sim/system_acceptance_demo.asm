@@ -3,12 +3,13 @@
 # SW[15:12] selects a page; SW[11:0] is page input.
 #   0 self-test, 1 MMIO mirror, 2 ALU, 3 DMEM/cache,
 #   4 Fibonacci, 5 pipeline benchmark, 6 interrupt dashboard,
-#   7 PS/2 dashboard.
+#   7 PS/2 dashboard, 8 push-button dashboard.
 #
 # DMEM layout:
 #   0x000..0x00c cache test line, 0x100 conflict line
 #   0x200 switch snapshot, 0x204 switch IRQ count
 #   0x208 last claim ID, 0x20c PS/2 scan code, 0x210 PS/2 IRQ count
+#   0x214 button bitmap, 0x218 button IRQ count
 #   0x380 benchmark marker, 0x400.. ISR save area
 
     # Clear software-visible state.
@@ -17,6 +18,8 @@
     sw   x0, 0x208(x5)
     sw   x0, 0x20c(x5)
     sw   x0, 0x210(x5)
+    sw   x0, 0x214(x5)
+    sw   x0, 0x218(x5)
     sw   x0, 0x380(x5)
 
     # Capture the initial switch value before enabling its interrupt.
@@ -29,16 +32,18 @@
     addi x7, x7, 0x800
     csrrw x0, mtvec, x7
 
-    # PLIC priority: source 2 (PS/2) = 2, source 10 (switches) = 1.
+    # PLIC priority: source 2 (PS/2) = 2; sources 8 (buttons)
+    # and 10 (switches) = 1.
     lui  x6, 0x81000
     addi x7, x0, 2
     sw   x7, 8(x6)
     addi x7, x0, 1
+    sw   x7, 32(x6)
     sw   x7, 40(x6)
 
-    # Enable sources 2 and 10, threshold = 0.
+    # Enable sources 2, 8 and 10, threshold = 0.
     lui  x6, 0x81002
-    addi x7, x0, 0x404
+    addi x7, x0, 0x504
     sw   x7, 0(x6)
     lui  x6, 0x81200
     sw   x0, 0(x6)
@@ -71,7 +76,11 @@ main_loop:
     beq  x7, x8, page_benchmark
     addi x8, x0, 6
     beq  x7, x8, page_interrupts
-    jal  x0, page_ps2
+    addi x8, x0, 7
+    beq  x7, x8, page_ps2
+    addi x8, x0, 8
+    beq  x7, x8, page_buttons
+    jal  x0, page_unsupported
 
 page_self_test:
     # ALU and forwarding checks.
@@ -274,6 +283,28 @@ page_ps2:
     jal  x1, write_outputs
     jal  x0, main_loop
 
+page_buttons:
+    # Display 88BBCCCC: BB is the live captured button bitmap and
+    # CCCC is the number of button press interrupts handled.
+    lw   x12, 0x214(x5)
+    lw   x13, 0x218(x5)
+    lui  x10, 0x88000
+    slli x14, x12, 16
+    or   x10, x10, x14
+    andi x13, x13, 0xffff
+    or   x10, x10, x13
+    ori  x11, x12, 0x20
+    jal  x1, write_outputs
+    jal  x0, main_loop
+
+page_unsupported:
+    # Pages 9..F are deliberately obvious instead of aliasing page 7.
+    lui  x10, 0xf0000
+    or   x10, x10, x7
+    addi x11, x0, 0
+    jal  x1, write_outputs
+    jal  x0, main_loop
+
 # Input x10: eight displayed hex digits; x11: LED value.
 # Clobbers x20 and x21.
 write_outputs:
@@ -337,6 +368,8 @@ isr_entry:
     beq  x10, x11, isr_switch
     addi x11, x0, 2
     beq  x10, x11, isr_ps2
+    addi x11, x0, 8
+    beq  x10, x11, isr_button
     jal  x0, isr_complete
 
 isr_switch:
@@ -356,6 +389,17 @@ isr_ps2:
     lw   x13, 0x210(x7)
     addi x13, x13, 1
     sw   x13, 0x210(x7)
+    jal  x0, isr_complete
+
+isr_button:
+    # Reading BTN_VALUE clears the edge-latched button pending bit.
+    lui  x11, 0x80000
+    lw   x12, 52(x11)
+    andi x12, x12, 0x1f
+    sw   x12, 0x214(x7)
+    lw   x13, 0x218(x7)
+    addi x13, x13, 1
+    sw   x13, 0x218(x7)
 
 isr_complete:
     lui  x6, 0x81200
