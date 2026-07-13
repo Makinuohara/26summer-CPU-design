@@ -6,6 +6,11 @@ module fpga_top #(
     input wire CLK100MHZ,
     input wire CPU_RESETN,
     input wire [15:0] SW,
+    input wire BTNL,
+    input wire BTND,
+    input wire BTNR,
+    input wire BTNU,
+    input wire BTNC,
     input wire PS2_CLK,
     input wire PS2_DATA,
     output wire [15:0] LED,
@@ -13,13 +18,15 @@ module fpga_top #(
     output wire DP,
     output wire [7:0] AN
 );
+    wire [4:0] board_btn = {BTNC, BTNU, BTNR, BTND, BTNL};
+
     soc #(
         .CLK_DIV_BITS(CLK_DIV_BITS)
     ) u_soc (
         .clk(CLK100MHZ),
         .rst_n(CPU_RESETN),
         .sw(SW),
-        .btn(5'b0),
+        .btn(board_btn),
         .ps2_clk(PS2_CLK),
         .ps2_data(PS2_DATA),
         .led(LED),

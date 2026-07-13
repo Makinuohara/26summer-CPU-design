@@ -1,4 +1,4 @@
-## Nexys4 DDR constraints for fpga_top with full PS/2 keyboard support.
+## Nexys4 DDR constraints for SoC tops with PS/2 and five board buttons.
 ## Check your board revision manual before final submission.
 
 set_property CFGBVS VCCO [current_design]
@@ -11,6 +11,12 @@ set_property -dict { PACKAGE_PIN C12 IOSTANDARD LVCMOS33 } [get_ports { CPU_RESE
 
 set_property -dict { PACKAGE_PIN F4  IOSTANDARD LVCMOS33 } [get_ports { PS2_CLK }];
 set_property -dict { PACKAGE_PIN B2  IOSTANDARD LVCMOS33 } [get_ports { PS2_DATA }];
+
+set_property -dict { PACKAGE_PIN P17 IOSTANDARD LVCMOS33 } [get_ports { BTNL }];
+set_property -dict { PACKAGE_PIN P18 IOSTANDARD LVCMOS33 } [get_ports { BTND }];
+set_property -dict { PACKAGE_PIN M17 IOSTANDARD LVCMOS33 } [get_ports { BTNR }];
+set_property -dict { PACKAGE_PIN M18 IOSTANDARD LVCMOS33 } [get_ports { BTNU }];
+set_property -dict { PACKAGE_PIN N17 IOSTANDARD LVCMOS33 } [get_ports { BTNC }];
 
 set_property -dict { PACKAGE_PIN J15 IOSTANDARD LVCMOS33 } [get_ports { SW[0] }];
 set_property -dict { PACKAGE_PIN L16 IOSTANDARD LVCMOS33 } [get_ports { SW[1] }];
