@@ -16,6 +16,11 @@ module pipeline_alu (
     localparam ALU_SRA  = 4'd7;
     localparam ALU_SLT  = 4'd8;
     localparam ALU_SLTU = 4'd9;
+    localparam ALU_MUL  = 4'd10;
+    localparam ALU_DIV  = 4'd11;
+
+    wire signed [31:0] signed_a = a;
+    wire signed [31:0] signed_b = b;
 
     always @(*) begin
         case (alu_ctrl)
@@ -29,6 +34,16 @@ module pipeline_alu (
             ALU_SRA:  result = $signed(a) >>> b[4:0];
             ALU_SLT:  result = ($signed(a) < $signed(b)) ? 32'd1 : 32'd0;
             ALU_SLTU: result = (a < b) ? 32'd1 : 32'd0;
+            ALU_MUL:  result = signed_a * signed_b;
+            ALU_DIV: begin
+                if (b == 32'b0) begin
+                    result = 32'hffff_ffff;
+                end else if (a == 32'h8000_0000 && b == 32'hffff_ffff) begin
+                    result = 32'h8000_0000;
+                end else begin
+                    result = signed_a / signed_b;
+                end
+            end
             default:  result = 32'b0;
         endcase
     end

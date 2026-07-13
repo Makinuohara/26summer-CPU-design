@@ -1,3 +1,5 @@
+![1783928212781](image/memory/1783928212781.png)
+
 # 存储子系统设计方案
 
 ## 1. 设计目标
@@ -52,11 +54,11 @@ CPU -> MMIO decoder -> I/O / interrupt_controller
 
 ## 2. 模块职责
 
-| 模块 | 责任 |
-| --- | --- |
-| `imem.v` | 指令存储器，面向 CPU 取指总线 |
-| `dmem.v` | 纯后端数据存储器，面向 CPU 内置 cache 或 SoC 数据总线 |
-| `cache.v` | 直接映射 D-Cache，当前由 CPU 内部实例化使用 |
+| 模块        | 责任                                                  |
+| ----------- | ----------------------------------------------------- |
+| `imem.v`  | 指令存储器，面向 CPU 取指总线                         |
+| `dmem.v`  | 纯后端数据存储器，面向 CPU 内置 cache 或 SoC 数据总线 |
+| `cache.v` | 直接映射 D-Cache，当前由 CPU 内部实例化使用           |
 
 此外，`src/memory/memory_internal.vh` 提供共享内部模块 `memory_backend_core`，统一封装：
 
@@ -237,11 +239,13 @@ mem_ack / mem_rdata / mem_fault
 当前 `cache.v` 不再由 `dmem.v` 实例化，而是由 `pipeline_cpu_top.v` 内部实例化，并通过地址判断只接管主存区访问：
 
 ```text
-addr < 0x0800_0000   -> cached
-addr >= 0x0800_0000  -> MMIO bypass
+addr < 0x0800_0000        -> cached
+合法 MMIO 映射地址         -> bypass cache，直通 SoC 侧设备译码器
+其他未映射地址             -> CPU 近端直接 fault
 ```
 
 这样可以避免 cache 和真实存储后端共享同一层模块封装，从结构上更符合“CPU 近端缓存 + 远端主存”的设计目标。
+同时，设备映射地址不会进入 cache，不会出现键盘、开关、LED、数码管等 MMIO 读写被缓存后产生旧值的问题。
 
 ## 6. 当前版本的边界
 
@@ -258,9 +262,10 @@ addr >= 0x0800_0000  -> MMIO bypass
 系统顶层建议这样接：
 
 1. CPU 的 `imem_*` 直接连接 `imem.v`
-2. CPU 内部主存访问先经过 D-Cache
-3. CPU 对外暴露的 `dmem_*` 再连接 `src/io/dmem_bus_decoder.v`
-4. 译码器的 `mem_*` 端口连接 `dmem.v`
-5. 译码器其余 `sw/led/seg/btn/intc` 端口连接各 I/O 模块
+2. CPU 内部近端译码器先判断主存、合法 MMIO 和非法地址
+3. 主存访问经过 CPU 内部 D-Cache 后再访问 `dmem.v`
+4. 合法 MMIO 访问通过 CPU 对外 `dmem_*` 端口连接 `src/io/dmem_bus_decoder.v`
+5. 译码器的 `mem_*` 端口连接 `dmem.v`
+6. 译码器其余 `sw/led/seg/btn/intc` 端口连接各 I/O 模块
 
 这样 CPU、内存和 I/O 的职责边界是清楚的，后续联调也最稳定。

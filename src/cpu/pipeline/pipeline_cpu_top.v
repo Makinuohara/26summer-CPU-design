@@ -47,6 +47,20 @@ module pipeline_cpu_top #(
     localparam BR_BLTU = 3'd5;
     localparam BR_BGEU = 3'd6;
 
+    localparam DMEM_BASE_END = 32'h0800_0000;
+    localparam MMIO_PS2_BASE = 32'h8000_0000;
+    localparam MMIO_PS2_END  = 32'h8000_0008;
+    localparam MMIO_SW_BASE  = 32'h8000_0008;
+    localparam MMIO_SW_END   = 32'h8000_000c;
+    localparam MMIO_LED_BASE = 32'h8000_000c;
+    localparam MMIO_LED_END  = 32'h8000_0010;
+    localparam MMIO_SEG_BASE = 32'h8000_0010;
+    localparam MMIO_SEG_END  = 32'h8000_0030;
+    localparam MMIO_BTN_BASE = 32'h8000_0030;
+    localparam MMIO_BTN_END  = 32'h8000_0034;
+    localparam MMIO_INTC_BASE = 32'h8100_0000;
+    localparam MMIO_INTC_END  = 32'h8120_0008;
+
     reg [31:0] pc;
 
     reg if_id_valid;
@@ -216,7 +230,22 @@ module pipeline_cpu_top #(
     wire mem_active = ex_mem_valid && (ex_mem_mem_read || ex_mem_mem_write);
     wire [31:0] core_dmem_addr = ex_mem_alu_result;
     wire core_dmem_req = mem_active;
-    wire core_dmem_cached = core_dmem_addr < 32'h0800_0000;
+    wire cpu_decode_mem = core_dmem_addr < DMEM_BASE_END;
+    wire cpu_decode_ps2 = (core_dmem_addr >= MMIO_PS2_BASE) && (core_dmem_addr < MMIO_PS2_END);
+    wire cpu_decode_sw = (core_dmem_addr >= MMIO_SW_BASE) && (core_dmem_addr < MMIO_SW_END);
+    wire cpu_decode_led = (core_dmem_addr >= MMIO_LED_BASE) && (core_dmem_addr < MMIO_LED_END);
+    wire cpu_decode_seg = (core_dmem_addr >= MMIO_SEG_BASE) && (core_dmem_addr < MMIO_SEG_END);
+    wire cpu_decode_btn = (core_dmem_addr >= MMIO_BTN_BASE) && (core_dmem_addr < MMIO_BTN_END);
+    wire cpu_decode_intc = (core_dmem_addr >= MMIO_INTC_BASE) && (core_dmem_addr < MMIO_INTC_END);
+    wire cpu_decode_mmio = cpu_decode_ps2 ||
+                           cpu_decode_sw ||
+                           cpu_decode_led ||
+                           cpu_decode_seg ||
+                           cpu_decode_btn ||
+                           cpu_decode_intc;
+    wire cpu_decode_miss = mem_active && !(cpu_decode_mem || cpu_decode_mmio);
+    wire core_dmem_cached = cpu_decode_mem;
+    wire core_dmem_mmio = cpu_decode_mmio;
     wire [31:0] cache_dmem_addr;
     wire cache_dmem_req;
     wire cache_dmem_we;
@@ -225,9 +254,15 @@ module pipeline_cpu_top #(
     wire cache_ack;
     wire [31:0] cache_rdata;
     wire cache_fault;
-    wire dmem_rsp_ack = core_dmem_cached ? cache_ack : dmem_ack;
-    wire [31:0] dmem_rsp_rdata = core_dmem_cached ? cache_rdata : dmem_rdata;
-    wire dmem_rsp_fault = core_dmem_cached ? cache_fault : dmem_fault;
+    wire dmem_rsp_ack = core_dmem_cached ? cache_ack :
+                        core_dmem_mmio ? dmem_ack :
+                        cpu_decode_miss;
+    wire [31:0] dmem_rsp_rdata = core_dmem_cached ? cache_rdata :
+                                  core_dmem_mmio ? dmem_rdata :
+                                  32'b0;
+    wire dmem_rsp_fault = core_dmem_cached ? cache_fault :
+                           core_dmem_mmio ? dmem_fault :
+                           cpu_decode_miss;
     wire imem_wait = imem_req && !imem_ack;
     wire dmem_wait = mem_active && !dmem_rsp_ack;
     // Front-end fetch wait should not freeze the older pipeline stages. Otherwise
@@ -351,7 +386,9 @@ module pipeline_cpu_top #(
         .mem_fault(dmem_fault)
     );
 
-    assign dmem_req = core_dmem_cached ? cache_dmem_req : core_dmem_req;
+    assign dmem_req = core_dmem_cached ? cache_dmem_req :
+                      core_dmem_mmio ? core_dmem_req :
+                      1'b0;
     assign dmem_addr = core_dmem_cached ? cache_dmem_addr : core_dmem_addr;
     assign dmem_we = core_dmem_cached ? cache_dmem_we : ex_mem_mem_write;
     assign dmem_wdata = core_dmem_cached ? cache_dmem_wdata : ex_mem_store_data;
