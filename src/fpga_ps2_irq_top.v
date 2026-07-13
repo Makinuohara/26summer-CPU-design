@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
-module fpga_top #(
-    parameter CLK_DIV_BITS = 18
+module fpga_ps2_irq_top #(
+    parameter CLK_DIV_BITS = 15
 ) (
     input wire CLK100MHZ,
     input wire CPU_RESETN,
@@ -18,10 +18,12 @@ module fpga_top #(
     output wire DP,
     output wire [7:0] AN
 );
+    wire unused_sw = ^SW;
     wire [4:0] board_btn = {BTNC, BTNU, BTNR, BTND, BTNL};
 
     soc #(
-        .CLK_DIV_BITS(CLK_DIV_BITS)
+        .CLK_DIV_BITS(CLK_DIV_BITS),
+        .IMEM_INIT_FILE("ps2_irq_demo.mem")
     ) u_soc (
         .clk(CLK100MHZ),
         .rst_n(CPU_RESETN),
@@ -42,5 +44,4 @@ module fpga_top #(
         .debug_seg_value(),
         .meip()
     );
-
 endmodule

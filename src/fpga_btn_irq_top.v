@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module fpga_top #(
+module fpga_btn_irq_top #(
     parameter CLK_DIV_BITS = 18
 ) (
     input wire CLK100MHZ,
@@ -18,14 +18,16 @@ module fpga_top #(
     output wire DP,
     output wire [7:0] AN
 );
+    wire unused_sw = ^SW;
     wire [4:0] board_btn = {BTNC, BTNU, BTNR, BTND, BTNL};
 
     soc #(
-        .CLK_DIV_BITS(CLK_DIV_BITS)
+        .CLK_DIV_BITS(CLK_DIV_BITS),
+        .IMEM_INIT_FILE("btn_irq_demo.mem")
     ) u_soc (
         .clk(CLK100MHZ),
         .rst_n(CPU_RESETN),
-        .sw(SW),
+        .sw(16'b0),
         .btn(board_btn),
         .ps2_clk(PS2_CLK),
         .ps2_data(PS2_DATA),
@@ -42,5 +44,4 @@ module fpga_top #(
         .debug_seg_value(),
         .meip()
     );
-
 endmodule
