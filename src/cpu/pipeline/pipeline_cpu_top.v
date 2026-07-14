@@ -1,5 +1,13 @@
 `timescale 1ns / 1ps
 
+// 五级流水线 CPU 顶层。
+//
+// CPU 对外暴露两组简单的 req/ack 总线：
+//   - imem_*：取指通路
+//   - dmem_*：数据通路，普通内存和 MMIO 共用
+//
+// CPU 内部会先区分地址类型：普通数据内存访问进入 D-Cache；
+// 缓存范围之外的地址直接转发到 SoC 数据总线，用于访问 MMIO 外设。
 module pipeline_cpu_top #(
     parameter DCACHE_LINES = 16,
     parameter DCACHE_LINE_WORDS = 4
@@ -47,6 +55,9 @@ module pipeline_cpu_top #(
     localparam BR_BLTU = 3'd5;
     localparam BR_BGEU = 3'd6;
 
+    // PC 和流水线寄存器。
+    // 每个流水级边界同时保存数据、控制信号和 valid 标志。
+    // valid 为 0 的阶段等价于一个 bubble。
     reg [31:0] pc;
 
     reg if_id_valid;
@@ -114,8 +125,14 @@ module pipeline_cpu_top #(
     reg [1:0] mem_wb_csr_op;
     reg [11:0] mem_wb_csr_addr;
 
+    // 中断排空状态：
+    // 当存在可响应中断时，CPU 先停止取入新指令，
+    // 让流水线中更早的指令正常提交，然后再进入 trap。
     reg interrupt_drain_active;
     reg [31:0] interrupt_resume_pc;
+
+    // 控制流重定向时，如果旧取指请求仍在飞行中，则置位该标志。
+    // 下一次 imem 响应会被丢弃，避免错误路径指令进入 IF/ID。
     reg discard_imem_resp;
 
     wire [6:0] if_id_opcode = if_id_instr[6:0];
@@ -126,6 +143,8 @@ module pipeline_cpu_top #(
     wire [6:0] if_id_funct7 = if_id_instr[31:25];
     wire [11:0] if_id_csr_addr = if_id_instr[31:20];
 
+    // 最终写回选择器。CSR 指令需要把旧 CSR 值写回 rd，
+    // 当前通过前面流水级选定的 ALU 结果路径传递。
     wire [31:0] wb_data =
         (mem_wb_wb_sel == WB_MEM) ? mem_wb_mem_data :
         (mem_wb_wb_sel == WB_PC4) ? mem_wb_pc4 :
@@ -170,6 +189,8 @@ module pipeline_cpu_top #(
     wire dec_csr_use_imm;
     wire dec_mret;
 
+    // ID 阶段硬布线译码器：根据 opcode/funct 字段生成控制信号，
+    // 随后这些控制信号会锁存进 ID/EX 流水线寄存器。
     pipeline_control_unit u_control (
         .opcode(if_id_opcode),
         .funct3(if_id_funct3),
@@ -201,6 +222,8 @@ module pipeline_cpu_top #(
 
     wire load_use_stall;
 
+    // 检测典型 load-use 冒险。该情况不能靠前递解决，
+    // 因为 load 数据必须等访存响应返回后才有效。
     pipeline_hazard_unit u_hazard (
         .if_id_valid(if_id_valid),
         .id_ex_valid(id_ex_valid),
@@ -213,6 +236,9 @@ module pipeline_cpu_top #(
         .load_use_stall(load_use_stall)
     );
 
+    // CPU 近端的数据访问分流：
+    //   可缓存内存区域 -> 内部 D-Cache
+    //   MMIO/不可缓存区域 -> 直接走外部 dmem 总线
     wire mem_active = ex_mem_valid && (ex_mem_mem_read || ex_mem_mem_write);
     wire [31:0] core_dmem_addr = ex_mem_alu_result;
     wire core_dmem_req = mem_active;
@@ -230,15 +256,17 @@ module pipeline_cpu_top #(
     wire dmem_rsp_fault = core_dmem_cached ? cache_fault : dmem_fault;
     wire imem_wait = imem_req && !imem_ack;
     wire dmem_wait = mem_active && !dmem_rsp_ack;
-    // Front-end fetch wait should not freeze the older pipeline stages. Otherwise
-    // an instruction already sitting in IF/ID only moves forward when the *next*
-    // instruction arrives, and older EX/MEM/WB stages can be replayed or delayed.
+    // 前端取指等待不应冻结更老的后端流水级。
+    // 否则已经位于 IF/ID 的指令会等到“下一条指令返回”才继续前推，
+    // 甚至导致 EX/MEM/WB 中的旧指令被重复或延迟处理。
     wire pipeline_stall = dmem_wait || load_use_stall;
     wire perf_stall = imem_wait || pipeline_stall;
 
     wire [31:0] fwd_rs1;
     wire [31:0] fwd_rs2;
 
+    // 将 ALU 或写回结果前递到 EX 阶段，
+    // 减少连续相关 ALU 指令产生的不必要暂停。
     pipeline_forwarding_unit u_forwarding (
         .id_ex_rs1(id_ex_rs1),
         .id_ex_rs2(id_ex_rs2),
@@ -276,6 +304,8 @@ module pipeline_cpu_top #(
     wire take_interrupt_trap;
     wire mret_take = id_ex_valid && id_ex_mret && !pipeline_stall;
 
+    // CSR 单元维护机器态状态寄存器，并判断中断是否可响应。
+    // CSR 写入在 WB 阶段提交；trap 入口由 take_interrupt_trap 驱动。
     pipeline_csr_unit u_csr (
         .clk(clk),
         .rst_n(rst_n),
@@ -302,6 +332,8 @@ module pipeline_cpu_top #(
     wire [31:0] csr_ex_wdata = id_ex_csr_use_imm ? {27'b0, id_ex_rs1} : fwd_rs1;
     wire [31:0] ex_result = id_ex_csr_en ? id_ex_csr_rdata : alu_result;
 
+    // 控制流重定向在 EX 阶段完成，并且在前递之后判断，
+    // 因此分支比较可以使用最新的操作数。
     wire branch_taken = id_ex_valid && (
         (id_ex_branch_type == BR_BEQ  && (fwd_rs1 == fwd_rs2)) ||
         (id_ex_branch_type == BR_BNE  && (fwd_rs1 != fwd_rs2)) ||
@@ -319,6 +351,8 @@ module pipeline_cpu_top #(
         id_ex_jalr ? jalr_target :
                      branch_target;
 
+    // 中断在流水线边界上保持精确：先进入排空模式，
+    // 等所有在飞指令离开流水线后，再真正进入 trap。
     wire pipeline_empty = !if_id_valid && !id_ex_valid && !ex_mem_valid && !mem_wb_valid;
     wire enter_interrupt_drain = irq_pending && !interrupt_drain_active && !redirect_exec && !pipeline_stall;
     assign take_interrupt_trap = interrupt_drain_active && pipeline_empty && !pipeline_stall;
@@ -327,6 +361,8 @@ module pipeline_cpu_top #(
     assign imem_req = rst_n && !interrupt_drain_active;
     assign imem_addr = pc;
 
+    // 内部 D-Cache。它只接收可缓存内存地址的访问请求；
+    // MMIO 访问会绕过该实例，直接交给 SoC 总线译码器。
     cache #(
         .CACHE_LINES(DCACHE_LINES),
         .LINE_WORDS(DCACHE_LINE_WORDS)
@@ -351,6 +387,7 @@ module pipeline_cpu_top #(
         .mem_fault(dmem_fault)
     );
 
+    // 将缓存路径和非缓存路径重新合成为 SoC 期望的一组外部 dmem 总线。
     assign dmem_req = core_dmem_cached ? cache_dmem_req : core_dmem_req;
     assign dmem_addr = core_dmem_cached ? cache_dmem_addr : core_dmem_addr;
     assign dmem_we = core_dmem_cached ? cache_dmem_we : ex_mem_mem_write;
@@ -371,6 +408,9 @@ module pipeline_cpu_top #(
         .flush_count(debug_flush)
     );
 
+    // 主流水线状态机。
+    // 该时序块负责推进流水线寄存器、处理 stall/flush、
+    // 执行中断排空，并更新 PC。
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             pc <= 32'b0;
@@ -443,6 +483,7 @@ module pipeline_cpu_top #(
             interrupt_resume_pc <= 32'b0;
             discard_imem_resp <= 1'b0;
         end else if (take_interrupt_trap) begin
+            // 排空完成后进入 trap：跳转到 mtvec，并清空所有流水级。
             pc <= csr_mtvec;
             if_id_valid <= 1'b0;
             id_ex_valid <= 1'b0;
@@ -459,6 +500,8 @@ module pipeline_cpu_top #(
             end
 
             if (enter_interrupt_drain) begin
+                // 停止接收新指令，但允许当前 IF/ID 指令进入后端，
+                // 这样更早的工作可以继续提交。
                 pc <= pc;
                 if_id_valid <= 1'b0;
                 if (imem_wait) begin
@@ -492,6 +535,8 @@ module pipeline_cpu_top #(
                 id_ex_csr_addr <= if_id_csr_addr;
                 id_ex_mret <= dec_mret;
             end else if (interrupt_drain_active) begin
+                // 排空期间保持前端为空。
+                // 若更老的 branch/mret 产生重定向，仍然记录为恢复 PC。
                 pc <= redirect_exec ? redirect_pc : pc;
                 if_id_valid <= 1'b0;
                 id_ex_valid <= 1'b0;
@@ -506,8 +551,8 @@ module pipeline_cpu_top #(
                     discard_imem_resp <= 1'b1;
                 end
             end else begin
-                // Consume the already-fetched IF/ID instruction every cycle the
-                // back-end can run, even if the next instruction has not returned.
+                // 只要后端可以运行，就消费已经取到的 IF/ID 指令；
+                // 即使下一条指令尚未返回，也不能阻塞旧指令前推。
                 id_ex_valid <= if_id_valid;
                 id_ex_pc <= if_id_pc;
                 id_ex_pc4 <= if_id_pc4;

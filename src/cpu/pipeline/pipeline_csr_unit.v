@@ -1,5 +1,9 @@
 `timescale 1ns / 1ps
 
+// 机器态 CSR 单元。
+//
+// 负责维护 mstatus/mie/mtvec/mepc/mcause，并根据 mip/mie/mstatus
+// 判断当前是否存在可响应中断。CSR 写入在 WB 阶段提交。
 module pipeline_csr_unit (
     input wire clk,
     input wire rst_n,
@@ -27,6 +31,7 @@ module pipeline_csr_unit (
     output wire irq_pending,
     output wire [31:0] irq_cause
 );
+    // 当前 CPU 实现用到的机器态 CSR 地址。
     localparam CSR_MSTATUS = 12'h300;
     localparam CSR_MIE     = 12'h304;
     localparam CSR_MTVEC   = 12'h305;
@@ -34,6 +39,7 @@ module pipeline_csr_unit (
     localparam CSR_MCAUSE  = 12'h342;
     localparam CSR_MIP     = 12'h344;
 
+    // CSR 指令低两位操作码：写入、置位、清位。
     localparam CSR_OP_NONE  = 2'b00;
     localparam CSR_OP_WRITE = 2'b01;
     localparam CSR_OP_SET   = 2'b10;
@@ -51,12 +57,16 @@ module pipeline_csr_unit (
     reg [31:0] next_mepc;
     reg [31:0] next_mcause;
 
+    // mip 是由外部中断线组合出来的只读视图。
+    // 位号遵循 RISC-V 机器态中断定义：MSIP=3，MTIP=7，MEIP=11。
     wire [31:0] mip_value = {20'b0, meip, 3'b0, mtip, 3'b0, msip, 3'b0};
     wire mstatus_mie = mstatus_reg[3];
     wire irq_meip = meip && mie_reg[11];
     wire irq_mtip = mtip && mie_reg[7];
     wire irq_msip = msip && mie_reg[3];
 
+    // CSR 读改写操作的公共函数。
+    // WRITE 直接覆盖，SET 按位或，CLEAR 按位清零。
     function [31:0] csr_apply_op;
         input [31:0] old_value;
         input [31:0] write_value;
@@ -71,6 +81,8 @@ module pipeline_csr_unit (
         end
     endfunction
 
+    // 组合计算下一拍 CSR 状态。
+    // 优先在当前状态基础上应用 WB 阶段 CSR 写入，再处理 trap/mret 的自动更新。
     always @(*) begin
         next_mstatus = mstatus_reg;
         next_mie = mie_reg;
@@ -91,16 +103,19 @@ module pipeline_csr_unit (
         end
 
         if (trap_take) begin
+            // 进入 trap 时保存返回 PC 和原因，并把当前 MIE 复制到 MPIE 后关闭 MIE。
             next_mepc = trap_pc & 32'hffff_fffe;
             next_mcause = trap_cause;
             next_mstatus[7] = next_mstatus[3];
             next_mstatus[3] = 1'b0;
         end else if (mret_take) begin
+            // MRET 恢复全局中断使能，并按规范把 MPIE 置 1。
             next_mstatus[3] = next_mstatus[7];
             next_mstatus[7] = 1'b1;
         end
     end
 
+    // CSR 寄存器本体。
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             mstatus_reg <= 32'h0000_0000;
@@ -117,6 +132,7 @@ module pipeline_csr_unit (
         end
     end
 
+    // CSR 读取是组合逻辑，ID/EX 阶段会把读出的旧 CSR 值继续向后传递。
     always @(*) begin
         case (read_addr)
             CSR_MSTATUS: read_data = mstatus_reg;
@@ -131,6 +147,7 @@ module pipeline_csr_unit (
 
     assign mtvec_value = mtvec_reg;
     assign mepc_value = mepc_reg;
+    // 只有全局 MIE 和对应 mie 位同时打开时，中断才会被报告给 CPU 顶层。
     assign irq_pending = mstatus_mie && (irq_meip || irq_mtip || irq_msip);
     assign irq_cause =
         irq_meip ? 32'h8000_000b :

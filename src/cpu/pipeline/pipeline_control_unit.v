@@ -1,5 +1,9 @@
 `timescale 1ns / 1ps
 
+// ID 阶段硬布线控制器。
+//
+// 根据 RISC-V 指令的 opcode/funct3/funct7 字段生成后续流水级需要的控制信号。
+// 本模块不保存状态，是纯组合译码逻辑。
 module pipeline_control_unit (
     input wire [6:0] opcode,
     input wire [2:0] funct3,
@@ -21,6 +25,7 @@ module pipeline_control_unit (
     output reg csr_use_imm,
     output reg mret
 );
+    // 主操作码定义。
     localparam OPCODE_OP     = 7'b0110011;
     localparam OPCODE_OP_IMM = 7'b0010011;
     localparam OPCODE_LOAD   = 7'b0000011;
@@ -32,6 +37,7 @@ module pipeline_control_unit (
     localparam OPCODE_AUIPC  = 7'b0010111;
     localparam OPCODE_SYSTEM = 7'b1110011;
 
+    // ALU 控制码，需要和 pipeline_alu.v 保持一致。
     localparam ALU_ADD  = 4'd0;
     localparam ALU_SUB  = 4'd1;
     localparam ALU_AND  = 4'd2;
@@ -45,11 +51,13 @@ module pipeline_control_unit (
     localparam ALU_MUL  = 4'd10;
     localparam ALU_DIV  = 4'd11;
 
+    // 写回数据来源选择。
     localparam WB_ALU = 2'd0;
     localparam WB_MEM = 2'd1;
     localparam WB_PC4 = 2'd2;
     localparam WB_IMM = 2'd3;
 
+    // 分支类型编码，供 EX 阶段比较逻辑使用。
     localparam BR_NONE = 3'd0;
     localparam BR_BEQ  = 3'd1;
     localparam BR_BNE  = 3'd2;
@@ -62,6 +70,8 @@ module pipeline_control_unit (
     wire funct7_alt = (funct7 == 7'b0100000);
     wire funct7_muldiv = (funct7 == 7'b0000001);
 
+    // 先给所有控制信号设置安全默认值，再按指令类型覆盖。
+    // 这样未识别指令默认不会写寄存器、不会访存、不会跳转。
     always @(*) begin
         reg_write = 1'b0;
         mem_read = 1'b0;
@@ -81,6 +91,7 @@ module pipeline_control_unit (
 
         case (opcode)
             OPCODE_OP: begin
+                // R 型整数运算。funct7=0000001 时作为乘除法扩展处理。
                 reg_write = 1'b1;
                 if (funct7_muldiv) begin
                     case (funct3)
@@ -106,6 +117,7 @@ module pipeline_control_unit (
                 end
             end
             OPCODE_OP_IMM: begin
+                // I 型 ALU 指令，第二操作数来自立即数。
                 reg_write = 1'b1;
                 alu_src_imm = 1'b1;
                 case (funct3)
@@ -121,6 +133,7 @@ module pipeline_control_unit (
                 endcase
             end
             OPCODE_LOAD: begin
+                // 当前数据通路统一按 32 位 load 使用，宽度字段保留给总线接口。
                 reg_write = 1'b1;
                 mem_read = 1'b1;
                 alu_src_imm = 1'b1;
@@ -129,12 +142,14 @@ module pipeline_control_unit (
                 mem_width = 2'b00;
             end
             OPCODE_STORE: begin
+                // store 不写回寄存器，地址由 rs1 + imm 计算。
                 mem_write = 1'b1;
                 alu_src_imm = 1'b1;
                 alu_ctrl = ALU_ADD;
                 mem_width = 2'b00;
             end
             OPCODE_BRANCH: begin
+                // 分支是否真正跳转在 EX 阶段结合寄存器值判断。
                 case (funct3)
                     3'b000: branch_type = BR_BEQ;
                     3'b001: branch_type = BR_BNE;
@@ -146,6 +161,7 @@ module pipeline_control_unit (
                 endcase
             end
             OPCODE_JAL: begin
+                // JAL/JALR 写回 PC+4，目标地址由顶层流水线逻辑计算。
                 reg_write = 1'b1;
                 jump = 1'b1;
                 wb_sel = WB_PC4;
@@ -158,16 +174,19 @@ module pipeline_control_unit (
                 wb_sel = WB_PC4;
             end
             OPCODE_LUI: begin
+                // LUI 直接把 U 型立即数写回 rd。
                 reg_write = 1'b1;
                 wb_sel = WB_IMM;
             end
             OPCODE_AUIPC: begin
+                // AUIPC 使用 PC + U 型立即数。
                 reg_write = 1'b1;
                 alu_src_imm = 1'b1;
                 alu_src_pc = 1'b1;
                 alu_ctrl = ALU_ADD;
             end
             OPCODE_SYSTEM: begin
+                // 当前支持 MRET 和 CSR 读改写类指令。
                 if (instr == 32'h30200073) begin
                     mret = 1'b1;
                 end else if (funct3 != 3'b000) begin

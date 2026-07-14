@@ -1,5 +1,9 @@
 `timescale 1ns / 1ps
 
+// RISC-V 立即数生成器。
+//
+// 根据指令格式提取立即数字段并符号扩展到 32 位。
+// U 型立即数低 12 位补 0；B/J 型立即数低位固定为 0，用于半字对齐跳转。
 module pipeline_imm_gen (
     input wire [31:0] instr,
     output reg [31:0] imm
@@ -15,6 +19,8 @@ module pipeline_imm_gen (
 
     wire [6:0] opcode = instr[6:0];
 
+    // 这里只负责拼接和符号扩展，不判断指令是否合法。
+    // 合法性和控制信号由 pipeline_control_unit 负责。
     always @(*) begin
         case (opcode)
             OPCODE_OP_IMM,
