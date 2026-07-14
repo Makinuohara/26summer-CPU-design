@@ -135,6 +135,17 @@ module pipeline_cpu_top #(
     // 下一次 imem 响应会被丢弃，避免错误路径指令进入 IF/ID。
     reg discard_imem_resp;
 
+    // ============================================================
+    // IF 阶段：取指请求
+    // ============================================================
+    // IF 阶段只负责把当前 PC 发给指令存储器。
+    // 真正的指令返回会在主时序块里根据 imem_ack 写入 IF/ID 寄存器。
+    assign imem_req = rst_n && !interrupt_drain_active;
+    assign imem_addr = pc;
+
+    // ============================================================
+    // ID 阶段：译码、读寄存器、立即数生成、冒险检测
+    // ============================================================
     wire [6:0] if_id_opcode = if_id_instr[6:0];
     wire [4:0] if_id_rd = if_id_instr[11:7];
     wire [2:0] if_id_funct3 = if_id_instr[14:12];
@@ -143,23 +154,14 @@ module pipeline_cpu_top #(
     wire [6:0] if_id_funct7 = if_id_instr[31:25];
     wire [11:0] if_id_csr_addr = if_id_instr[31:20];
 
-    // 最终写回选择器。CSR 指令需要把旧 CSR 值写回 rd，
-    // 当前通过前面流水级选定的 ALU 结果路径传递。
-    wire [31:0] wb_data =
-        (mem_wb_wb_sel == WB_MEM) ? mem_wb_mem_data :
-        (mem_wb_wb_sel == WB_PC4) ? mem_wb_pc4 :
-        (mem_wb_wb_sel == WB_IMM) ? mem_wb_imm :
-                                    mem_wb_alu_result;
-
-    wire [31:0] ex_mem_write_data =
-        (ex_mem_wb_sel == WB_PC4) ? ex_mem_pc4 :
-        (ex_mem_wb_sel == WB_IMM) ? ex_mem_imm :
-                                    ex_mem_alu_result;
-
+    wire [31:0] wb_data;
+    wire [31:0] ex_mem_write_data;
     wire [31:0] rs1_data;
     wire [31:0] rs2_data;
     wire wb_write = mem_wb_valid && mem_wb_reg_write && !mem_wb_fault;
 
+    // ID 阶段读取通用寄存器；WB 阶段的写回数据同时接入写端口。
+    // 同周期读写同一寄存器时，regfile 内部会旁路 write_data。
     pipeline_regfile u_regfile (
         .clk(clk),
         .rst_n(rst_n),
@@ -236,34 +238,18 @@ module pipeline_cpu_top #(
         .load_use_stall(load_use_stall)
     );
 
-    // CPU 近端的数据访问分流：
-    //   可缓存内存区域 -> 内部 D-Cache
-    //   MMIO/不可缓存区域 -> 直接走外部 dmem 总线
-    wire mem_active = ex_mem_valid && (ex_mem_mem_read || ex_mem_mem_write);
-    wire [31:0] core_dmem_addr = ex_mem_alu_result;
-    wire core_dmem_req = mem_active;
-    wire core_dmem_cached = core_dmem_addr < 32'h0800_0000;
-    wire [31:0] cache_dmem_addr;
-    wire cache_dmem_req;
-    wire cache_dmem_we;
-    wire [31:0] cache_dmem_wdata;
-    wire [1:0] cache_dmem_width;
-    wire cache_ack;
-    wire [31:0] cache_rdata;
-    wire cache_fault;
-    wire dmem_rsp_ack = core_dmem_cached ? cache_ack : dmem_ack;
-    wire [31:0] dmem_rsp_rdata = core_dmem_cached ? cache_rdata : dmem_rdata;
-    wire dmem_rsp_fault = core_dmem_cached ? cache_fault : dmem_fault;
-    wire imem_wait = imem_req && !imem_ack;
-    wire dmem_wait = mem_active && !dmem_rsp_ack;
-    // 前端取指等待不应冻结更老的后端流水级。
-    // 否则已经位于 IF/ID 的指令会等到“下一条指令返回”才继续前推，
-    // 甚至导致 EX/MEM/WB 中的旧指令被重复或延迟处理。
-    wire pipeline_stall = dmem_wait || load_use_stall;
-    wire perf_stall = imem_wait || pipeline_stall;
-
+    // ============================================================
+    // EX 阶段：前递、ALU、CSR 判断、分支/跳转重定向
+    // ============================================================
     wire [31:0] fwd_rs1;
     wire [31:0] fwd_rs2;
+
+    // EX/MEM 阶段可供前递的数据。load 数据此时尚未返回，
+    // 所以前递单元会屏蔽 ex_mem_mem_read 的情况。
+    assign ex_mem_write_data =
+        (ex_mem_wb_sel == WB_PC4) ? ex_mem_pc4 :
+        (ex_mem_wb_sel == WB_IMM) ? ex_mem_imm :
+                                    ex_mem_alu_result;
 
     // 将 ALU 或写回结果前递到 EX 阶段，
     // 减少连续相关 ALU 指令产生的不必要暂停。
@@ -302,7 +288,7 @@ module pipeline_cpu_top #(
     wire irq_pending;
     wire [31:0] irq_cause;
     wire take_interrupt_trap;
-    wire mret_take = id_ex_valid && id_ex_mret && !pipeline_stall;
+    wire mret_take;
 
     // CSR 单元维护机器态状态寄存器，并判断中断是否可响应。
     // CSR 写入在 WB 阶段提交；trap 入口由 take_interrupt_trap 驱动。
@@ -351,15 +337,42 @@ module pipeline_cpu_top #(
         id_ex_jalr ? jalr_target :
                      branch_target;
 
+    // ============================================================
+    // MEM 阶段：D-Cache/MMIO 分流与数据访存
+    // ============================================================
+    // CPU 近端的数据访问分流：
+    //   可缓存内存区域 -> 内部 D-Cache
+    //   MMIO/不可缓存区域 -> 直接走外部 dmem 总线
+    wire mem_active = ex_mem_valid && (ex_mem_mem_read || ex_mem_mem_write);
+    wire [31:0] core_dmem_addr = ex_mem_alu_result;
+    wire core_dmem_req = mem_active;
+    wire core_dmem_cached = core_dmem_addr < 32'h0800_0000;
+    wire [31:0] cache_dmem_addr;
+    wire cache_dmem_req;
+    wire cache_dmem_we;
+    wire [31:0] cache_dmem_wdata;
+    wire [1:0] cache_dmem_width;
+    wire cache_ack;
+    wire [31:0] cache_rdata;
+    wire cache_fault;
+    wire dmem_rsp_ack = core_dmem_cached ? cache_ack : dmem_ack;
+    wire [31:0] dmem_rsp_rdata = core_dmem_cached ? cache_rdata : dmem_rdata;
+    wire dmem_rsp_fault = core_dmem_cached ? cache_fault : dmem_fault;
+    wire imem_wait = imem_req && !imem_ack;
+    wire dmem_wait = mem_active && !dmem_rsp_ack;
+    // 前端取指等待不应冻结更老的后端流水级。
+    // 否则已经位于 IF/ID 的指令会等到“下一条指令返回”才继续前推，
+    // 甚至导致 EX/MEM/WB 中的旧指令被重复或延迟处理。
+    wire pipeline_stall = dmem_wait || load_use_stall;
+    wire perf_stall = imem_wait || pipeline_stall;
+    assign mret_take = id_ex_valid && id_ex_mret && !pipeline_stall;
+
     // 中断在流水线边界上保持精确：先进入排空模式，
     // 等所有在飞指令离开流水线后，再真正进入 trap。
     wire pipeline_empty = !if_id_valid && !id_ex_valid && !ex_mem_valid && !mem_wb_valid;
     wire enter_interrupt_drain = irq_pending && !interrupt_drain_active && !redirect_exec && !pipeline_stall;
     assign take_interrupt_trap = interrupt_drain_active && pipeline_empty && !pipeline_stall;
     wire perf_flush = (!pipeline_stall) && (redirect_exec || enter_interrupt_drain || take_interrupt_trap);
-
-    assign imem_req = rst_n && !interrupt_drain_active;
-    assign imem_addr = pc;
 
     // 内部 D-Cache。它只接收可缓存内存地址的访问请求；
     // MMIO 访问会绕过该实例，直接交给 SoC 总线译码器。
@@ -393,6 +406,17 @@ module pipeline_cpu_top #(
     assign dmem_we = core_dmem_cached ? cache_dmem_we : ex_mem_mem_write;
     assign dmem_wdata = core_dmem_cached ? cache_dmem_wdata : ex_mem_store_data;
     assign dmem_width = core_dmem_cached ? cache_dmem_width : ex_mem_mem_width;
+
+    // ============================================================
+    // WB 阶段与调试计数：写回数据选择、提交统计
+    // ============================================================
+    // 最终写回选择器。CSR 指令需要把旧 CSR 值写回 rd，
+    // 当前通过前面流水级选定的 ALU 结果路径传递。
+    assign wb_data =
+        (mem_wb_wb_sel == WB_MEM) ? mem_wb_mem_data :
+        (mem_wb_wb_sel == WB_PC4) ? mem_wb_pc4 :
+        (mem_wb_wb_sel == WB_IMM) ? mem_wb_imm :
+                                    mem_wb_alu_result;
 
     assign debug_pc = pc;
 
